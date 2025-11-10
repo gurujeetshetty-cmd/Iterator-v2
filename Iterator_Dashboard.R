@@ -180,11 +180,11 @@ ui <- dashboardPage(
           box-shadow: 0 26px 60px rgba(15, 23, 42, 0.35);
         }
         .of-metric-panel {
-          background: #f8fafc;
-          border: 1px solid rgba(148, 163, 184, 0.35);
-          border-radius: 12px;
-          padding: 12px 16px;
-          margin-bottom: 18px;
+          background: rgba(226, 232, 240, 0.55);
+          border: 1px solid rgba(148, 163, 184, 0.28);
+          border-radius: 14px;
+          padding: 14px 18px;
+          margin-bottom: 20px;
         }
         .of-hist-grid {
           display: grid;
@@ -192,11 +192,11 @@ ui <- dashboardPage(
           gap: 12px;
         }
         .of-mini-hist {
-          background: #ffffff;
-          border-radius: 10px;
-          border: 1px solid rgba(148, 163, 184, 0.25);
-          padding: 10px 12px 8px 12px;
-          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+          background: rgba(248, 250, 252, 0.95);
+          border-radius: 12px;
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          padding: 12px 14px 10px 14px;
+          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
         }
         .of-mini-title {
           font-size: 13px;
@@ -206,8 +206,20 @@ ui <- dashboardPage(
         }
         .of-metric-title {
           font-weight: 600;
-          margin-bottom: 8px;
-          color: #1f2937;
+          margin-bottom: 10px;
+          color: #1e293b;
+        }
+        .manual-metric-section {
+          background: rgba(237, 242, 247, 0.6);
+          border: 1px solid rgba(148, 163, 184, 0.24);
+          border-radius: 16px;
+          padding: 18px 20px;
+          margin-bottom: 22px;
+        }
+        .manual-metric-section h4 {
+          font-weight: 600;
+          color: #0f172a;
+          margin-top: 0;
         }
         table.dataTable td.segment-column,
         table.dataTable th.segment-column {
@@ -580,7 +592,7 @@ server <- function(input, output, session) {
       return(list(header = character(0), cell = character(0)))
     }
 
-    cell_cols <- vapply(palette, lighten_color, character(1), amount = 0.68)
+    cell_cols <- vapply(palette, lighten_color, character(1), amount = 0.78)
     list(header = palette, cell = cell_cols)
   })
 
@@ -714,62 +726,121 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
     return(list())
   }
 
-  safe_read <- function(sheet_idx) {
-    tryCatch(
-      readxl::read_excel(summary_path, sheet = sheet_idx, col_names = FALSE),
-      error = function(e) NULL
-    )
-  }
-
-  xtabs <- safe_read(2)
-  if (is.null(xtabs) || !nrow(xtabs)) {
+  sheets <- tryCatch(readxl::excel_sheets(summary_path), error = function(...) character(0))
+  if (!length(sheets)) {
     return(list())
   }
 
-  find_blank_rows <- function(df) {
-    blank_rows <- apply(df, 1, function(row) all(is.na(row) | trimws(as.character(row)) == ""))
-    which(blank_rows)
+  norm_key <- function(x) tolower(gsub("[^a-z0-9]", "", x))
+  selected_norm <- unique(norm_key(selected_vars))
+  if (!length(selected_norm)) {
+    return(list())
+  }
+
+  candidate_sheets <- unique(c(
+    sheets[seq_len(min(5, length(sheets)))],
+    sheets[grep("seg|sum|var", tolower(sheets))]
+  ))
+
+  read_sheet <- function(sheet) {
+    tryCatch(
+      readxl::read_excel(summary_path, sheet = sheet, col_names = FALSE),
+      error = function(...) NULL
+    )
+  }
+
+  is_blank_row <- function(row) {
+    all(is.na(row) | trimws(as.character(row)) == "")
   }
 
   split_tables <- function(df) {
-    blanks <- find_blank_rows(df)
-    idx <- c(1, blanks + 1, nrow(df) + 1)
-    res <- lapply(seq_len(length(idx) - 1), function(i) {
-      df[idx[i]:(idx[i + 1] - 1), , drop = FALSE]
+    if (is.null(df) || !nrow(df)) return(list())
+    blank_idx <- which(apply(df, 1, is_blank_row))
+    cuts <- unique(c(1, blank_idx + 1, nrow(df) + 1))
+    purrr::map(seq_len(length(cuts) - 1), function(i) {
+      df[cuts[i]:(cuts[i + 1] - 1), , drop = FALSE]
     })
-    res
   }
 
-  raw_tables <- split_tables(xtabs)
-  norm_key <- function(x) tolower(gsub("[^a-z0-9]", "", x))
-
-  tables_by_var <- list()
-  for (tbl in raw_tables) {
-    header_val <- tbl[1, 1]
-    header_val <- ifelse(is.na(header_val), "", as.character(header_val))
-    if (!nzchar(header_val)) next
-    var_name <- sub("^00_SEGM_", "", header_val)
-    var_name <- trimws(var_name)
-    if (!nzchar(var_name)) next
-    norm_var <- norm_key(var_name)
-    matches <- norm_key(selected_vars)
-    if (!norm_var %in% matches) next
+  tidy_table <- function(tbl) {
+    if (is.null(tbl) || !nrow(tbl)) {
+      return(NULL)
+    }
 
     cleaned <- tbl
     cleaned[] <- lapply(cleaned, function(col) {
       if (is.list(col)) {
-        col <- sapply(col, function(x) paste(unlist(x), collapse = " "))
+        col <- vapply(col, function(x) paste(unlist(x), collapse = " "), character(1))
       }
       trimws(as.character(col))
     })
 
     cleaned <- cleaned[rowSums(cleaned == "" | is.na(cleaned)) != ncol(cleaned), , drop = FALSE]
-    if (!nrow(cleaned)) next
-    colnames(cleaned) <- as.character(unlist(cleaned[1, ]))
-    cleaned <- cleaned[-1, , drop = FALSE]
-    cleaned <- cleaned[, colSums(cleaned == "" | is.na(cleaned)) < nrow(cleaned), drop = FALSE]
+    if (nrow(cleaned) < 2) {
+      return(NULL)
+    }
 
-    tables_by_var[[var_name]] <- tibble::as_tibble(cleaned)
+    header <- cleaned[1, , drop = TRUE]
+    header <- ifelse(is.na(header) | header == "", paste0("Column_", seq_along(header)), header)
+    header <- make.unique(as.character(header))
+
+    cleaned <- cleaned[-1, , drop = FALSE]
+    if (!nrow(cleaned)) {
+      return(NULL)
+    }
+
+    cleaned <- cleaned[, colSums(cleaned == "" | is.na(cleaned)) < nrow(cleaned), drop = FALSE]
+    if (!ncol(cleaned)) {
+      return(NULL)
+    }
+
+    colnames(cleaned) <- header[seq_len(ncol(cleaned))]
+
+    tibble::as_tibble(cleaned)
+  }
+
+  tables_by_var <- list()
+
+  for (sheet in candidate_sheets) {
+    raw <- read_sheet(sheet)
+    if (is.null(raw) || !nrow(raw)) {
+      next
+    }
+
+    purrr::walk(split_tables(raw), function(tbl) {
+      if (is.null(tbl) || !nrow(tbl)) {
+        return()
+      }
+
+      header_val <- tbl[1, 1]
+      header_val <- ifelse(is.na(header_val), "", as.character(header_val))
+      if (!nzchar(header_val)) {
+        return()
+      }
+
+      var_name <- sub("^00_SEGM_", "", header_val)
+      var_name <- trimws(var_name)
+      norm_var <- norm_key(var_name)
+      if (!nzchar(var_name) || !nzchar(norm_var) || !norm_var %in% selected_norm) {
+        return()
+      }
+
+      cleaned_tbl <- tidy_table(tbl)
+      if (is.null(cleaned_tbl) || !nrow(cleaned_tbl)) {
+        return()
+      }
+
+      numeric_cols <- setdiff(names(cleaned_tbl), names(cleaned_tbl)[1])
+      cleaned_tbl[numeric_cols] <- lapply(cleaned_tbl[numeric_cols], function(col) {
+        vals <- suppressWarnings(as.numeric(gsub("[,%]", "", col)))
+        if (all(is.na(vals))) {
+          return(col)
+        }
+        vals
+      })
+
+      tables_by_var[[var_name]] <<- cleaned_tbl
+    })
   }
 
   if (!length(tables_by_var)) {
@@ -795,6 +866,7 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       output_id = output_id
     )
   }
+
   ordered
 }
 
@@ -838,6 +910,11 @@ segment_color_palette <- function(labels) {
   } else {
     colors <- base_palette[seq_len(length(labels))]
   }
+
+  soften_palette <- function(cols, amount = 0.4) {
+    vapply(cols, lighten_color, character(1), amount = amount)
+  }
+  colors <- soften_palette(colors, amount = 0.4)
 
   hashed <- vapply(labels, function(lbl) {
     ints <- utf8ToInt(lbl)
@@ -1099,46 +1176,193 @@ extract_of_distributions <- function(summary_path, segment_labels) {
     return(list())
   }
 
-  raw <- tryCatch(
-    readxl::read_excel(summary_path, sheet = 1),
-    error = function(e) NULL
-  )
-
-  if (is.null(raw) || !nrow(raw)) {
+  sheets <- tryCatch(readxl::excel_sheets(summary_path), error = function(...) character(0))
+  if (!length(sheets)) {
     return(list())
   }
 
-  seg_col_idx <- which(tolower(names(raw)) %in% c("polca_seg", "segment", "segment_id", "segmentid"))
-  if (!length(seg_col_idx)) {
-    return(list())
-  }
+  seg_norm_map <- normalize_key(segment_labels)
+  seg_lookup <- stats::setNames(segment_labels, seg_norm_map)
+  seg_lookup <- c(seg_lookup, stats::setNames(segment_labels, as.character(seq_along(segment_labels))))
 
-  seg_values <- suppressWarnings(as.integer(raw[[seg_col_idx[1]]]))
-  seg_map <- stats::setNames(segment_labels, seq_along(segment_labels))
-
-  valid_idx <- which(!is.na(seg_values) & as.character(seg_values) %in% names(seg_map))
-  if (!length(valid_idx)) {
-    return(list())
-  }
-
-  of_cols <- grep("^OF_", names(raw), value = TRUE)
-  if (!length(of_cols)) {
-    return(list())
-  }
+  candidate_sheets <- unique(c(
+    sheets[seq_len(min(5, length(sheets)))],
+    sheets[grep("seg|res|manual|summary", tolower(sheets))]
+  ))
 
   distributions <- list()
-  for (col in of_cols) {
-    metric_key <- toupper(col)
-    values <- suppressWarnings(as.numeric(raw[[col]]))
-    seg_labels <- seg_map[as.character(seg_values)]
-    tbl <- tibble::tibble(Segment = seg_labels, Value = values) %>%
-      dplyr::filter(!is.na(Segment) & !is.na(Value))
-    if (nrow(tbl)) {
-      distributions[[metric_key]] <- tbl
+
+  for (sheet in candidate_sheets) {
+    raw <- tryCatch(readxl::read_excel(summary_path, sheet = sheet), error = function(...) NULL)
+    if (is.null(raw) || !nrow(raw)) {
+      next
+    }
+
+    names(raw) <- make.unique(as.character(names(raw)))
+    name_keys <- tolower(gsub("\\s+", "", names(raw)))
+    seg_col_idx <- which(name_keys %in% c("polcaseg", "segment", "segmentid", "segment_id"))
+    if (!length(seg_col_idx)) {
+      next
+    }
+
+    seg_values <- raw[[seg_col_idx[1]]]
+    seg_norm <- normalize_key(as.character(seg_values))
+    seg_numeric <- suppressWarnings(as.integer(as.character(seg_values)))
+    seg_labels <- seg_lookup[seg_norm]
+    seg_labels_numeric <- segment_labels[seq_along(segment_labels)][seg_numeric]
+    seg_labels <- ifelse(!is.na(seg_labels), seg_labels, seg_labels_numeric)
+
+    if (all(is.na(seg_labels))) {
+      next
+    }
+
+    of_cols <- grep("^OF_", names(raw), ignore.case = TRUE, value = TRUE)
+    if (!length(of_cols)) {
+      next
+    }
+
+    for (col in of_cols) {
+      metric_key <- toupper(col)
+      values <- suppressWarnings(as.numeric(gsub("[,%]", "", raw[[col]])))
+      tbl <- tibble::tibble(Segment = seg_labels, Value = values) %>%
+        dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value))
+      if (!nrow(tbl)) {
+        next
+      }
+      if (metric_key %in% names(distributions)) {
+        distributions[[metric_key]] <- dplyr::bind_rows(distributions[[metric_key]], tbl)
+      } else {
+        distributions[[metric_key]] <- tbl
+      }
     }
   }
 
-  distributions
+  if (!length(distributions)) {
+    return(list())
+  }
+
+  purrr::imap(distributions, function(tbl, nm) {
+    tbl %>%
+      dplyr::mutate(
+        Segment = as.character(Segment),
+        Value = as.numeric(Value)
+      ) %>%
+      dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value)) %>%
+      dplyr::distinct()
+  })
+}
+
+prepare_of_distribution_data <- function(distributions) {
+  if (!length(distributions)) {
+    return(list())
+  }
+
+  cleaned <- purrr::imap(distributions, function(tbl, nm) {
+    if (is.null(tbl)) {
+      return(NULL)
+    }
+
+    df <- tibble::as_tibble(tbl)
+    segment_col <- names(df)[tolower(names(df)) %in% c("segment", "polca_seg", "segment_id", "segmentid")][1]
+    value_col <- names(df)[tolower(names(df)) %in% c("value", "metric_value", "score")][1]
+
+    if (is.na(segment_col) || is.na(value_col)) {
+      return(NULL)
+    }
+
+    seg_vals <- as.character(df[[segment_col]])
+    val_vals <- suppressWarnings(as.numeric(df[[value_col]]))
+    df <- tibble::tibble(Segment = seg_vals, Value = val_vals) %>%
+      dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value))
+
+    if (!nrow(df)) {
+      return(NULL)
+    }
+
+    df
+  })
+
+  cleaned <- purrr::compact(cleaned)
+  if (!length(cleaned)) {
+    return(list())
+  }
+
+  cleaned
+}
+
+write_manual_summary_workbook <- function(summary_path, metrics_table, var_tables, category_summary) {
+  if (!nzchar(summary_path) || !file.exists(summary_path)) {
+    return(invisible(FALSE))
+  }
+
+  try({
+    wb <- openxlsx::loadWorkbook(summary_path)
+
+    sheet_name <- "Manual Metrics"
+    if (sheet_name %in% openxlsx::getSheetNames(wb)) {
+      openxlsx::removeWorksheet(wb, sheet_name)
+    }
+    if (!is.null(metrics_table) && nrow(metrics_table)) {
+      openxlsx::addWorksheet(wb, sheet_name)
+      openxlsx::writeData(
+        wb,
+        sheet_name,
+        as.data.frame(metrics_table, stringsAsFactors = FALSE)
+      )
+    }
+
+    sheet_name <- "Manual Variable Summaries"
+    if (sheet_name %in% openxlsx::getSheetNames(wb)) {
+      openxlsx::removeWorksheet(wb, sheet_name)
+    }
+    if (length(var_tables)) {
+      openxlsx::addWorksheet(wb, sheet_name)
+
+      start_row <- 1
+      for (entry in var_tables) {
+        data_tbl <- entry$data
+        if (is.null(data_tbl) || !nrow(data_tbl)) {
+          next
+        }
+
+        openxlsx::writeData(
+          wb,
+          sheet = sheet_name,
+          x = entry$variable,
+          startRow = start_row,
+          startCol = 1,
+          colNames = FALSE
+        )
+
+        openxlsx::writeData(
+          wb,
+          sheet = sheet_name,
+          x = as.data.frame(data_tbl, stringsAsFactors = FALSE),
+          startRow = start_row + 1,
+          startCol = 1,
+          withFilter = FALSE
+        )
+
+        start_row <- start_row + nrow(data_tbl) + 3
+      }
+    }
+
+    sheet_name <- "Manual Category Summary"
+    if (sheet_name %in% openxlsx::getSheetNames(wb)) {
+      openxlsx::removeWorksheet(wb, sheet_name)
+    }
+    if (!is.null(category_summary) && nrow(category_summary)) {
+      openxlsx::addWorksheet(wb, sheet_name)
+      openxlsx::writeData(
+        wb,
+        sheet = sheet_name,
+        x = as.data.frame(category_summary, stringsAsFactors = FALSE)
+      )
+    }
+
+    openxlsx::saveWorkbook(wb, summary_path, overwrite = TRUE)
+    TRUE
+  }, silent = TRUE)
 }
 
   shinyFiles::shinyFileChoose(
@@ -2353,6 +2577,11 @@ extract_of_distributions <- function(summary_path, segment_labels) {
         }
 
         manual_state$segment_summary <- seg_incidence
+        segment_labels <- if (nrow(seg_incidence)) {
+          as.character(seg_incidence$Segment)
+        } else {
+          paste0("Segment ", seq_len(max(1, seg_n)))
+        }
 
         of_long <- extract_of_metric_table(rules_result, max(1, seg_n))
         if (nrow(of_long)) {
@@ -2374,9 +2603,8 @@ extract_of_distributions <- function(summary_path, segment_labels) {
           }, numeric(1))
         }
 
-        seg_labels <- paste0("Segment ", seq_len(max(1, seg_n)))
         variable_diff_tbl <- tibble::tibble(
-          Segment = seg_labels,
+          Segment = segment_labels,
           `Differentiating Vars` = fetch_metric("seg%d_diff"),
           `Bimodal Vars` = fetch_metric("bi_%d"),
           `Performance Vars` = fetch_metric("perf_%d"),
@@ -2394,28 +2622,24 @@ extract_of_distributions <- function(summary_path, segment_labels) {
         combined_table <- build_combined_metrics_table(seg_table, of_table, var_diff_table)
         manual_state$metrics_table <- combined_table
 
-        manual_state$available_of_metrics <- if (nrow(of_long)) sort(unique(of_long$Metric)) else character(0)
+        metric_keys <- if (nrow(of_long)) sort(unique(of_long$Metric)) else character(0)
 
-        distributions <- extract_of_distributions(summary_path, seg_incidence$Segment)
-        if (length(distributions)) {
-          names(distributions) <- toupper(names(distributions))
-          manual_state$of_distributions <- distributions
-          manual_state$available_of_metrics <- sort(unique(c(manual_state$available_of_metrics, names(distributions))))
-        } else {
-          manual_state$of_distributions <- list()
+        distributions <- extract_of_distributions(summary_path, segment_labels)
+        if (!length(distributions) && nrow(of_long)) {
+          distributions <- split(
+            of_long %>% dplyr::select(Metric, Segment, Value),
+            of_long$Metric
+          )
         }
 
-        if (nrow(combined_table)) {
-          try({
-            wb <- openxlsx::loadWorkbook(summary_path)
-            sheet_name <- "Manual Metrics"
-            if (sheet_name %in% openxlsx::getSheetNames(wb)) {
-              openxlsx::removeWorksheet(wb, sheet_name)
-            }
-            openxlsx::addWorksheet(wb, sheet_name)
-            openxlsx::writeData(wb, sheet_name, combined_table)
-            openxlsx::saveWorkbook(wb, summary_path, overwrite = TRUE)
-          }, silent = TRUE)
+        normalized_distributions <- prepare_of_distribution_data(distributions)
+        if (length(normalized_distributions)) {
+          names(normalized_distributions) <- toupper(names(normalized_distributions))
+          manual_state$of_distributions <- normalized_distributions
+          manual_state$available_of_metrics <- sort(unique(c(metric_keys, names(normalized_distributions))))
+        } else {
+          manual_state$of_distributions <- list()
+          manual_state$available_of_metrics <- metric_keys
         }
 
         incProgress(0.75, detail = "Extracting variable summaries")
@@ -2429,7 +2653,12 @@ extract_of_distributions <- function(summary_path, segment_labels) {
 
         manual_state$rendered_var_ids <- vapply(var_tables, function(tbl) tbl$output_id, character(1))
         manual_state$variable_tables <- var_tables
-        manual_state$category_choices <- vapply(var_tables, function(tbl) tbl$variable, character(1))
+        manual_state$category_choices <- unique(vapply(var_tables, function(tbl) tbl$variable, character(1)))
+        manual_state$category_choices <- manual_state$category_choices[nzchar(manual_state$category_choices)]
+
+        category_summary <- build_metric_category_summary(var_tables, manual_state$category_choices, segment_labels)
+
+        write_manual_summary_workbook(summary_path, combined_table, var_tables, category_summary)
 
         for (entry in var_tables) {
           local({
@@ -2446,7 +2675,7 @@ extract_of_distributions <- function(summary_path, segment_labels) {
           })
         }
 
-        available_categories <- manual_state$category_choices
+        available_categories <- sort(manual_state$category_choices)
         shinyWidgets::updatePickerInput(
           session,
           "manual_metric_category_select",
@@ -2997,7 +3226,7 @@ extract_of_distributions <- function(summary_path, segment_labels) {
 
           bins <- min(25, max(5, floor(sqrt(length(cleaned)))))
           seg_header <- header_cols[[seg]] %||% "#2563EB"
-          seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.65)
+          seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.82)
 
           raw_id <- paste0("hist_", metric_key, "_", idx, "_", seg)
           plot_id <- sanitize_manual_id(raw_id)
