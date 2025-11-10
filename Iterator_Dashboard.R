@@ -472,6 +472,33 @@ server <- function(input, output, session) {
     vals[!is.na(vals)]
   }
 
+  format_eta <- function(remaining_seconds, finish_time) {
+    if (!is.finite(remaining_seconds) || remaining_seconds < 0) {
+      return("Estimated completion: calculating...")
+    }
+
+    format_component <- function(value, unit) {
+      if (value <= 0) return(NULL)
+      sprintf("%d %s", value, if (value == 1) substr(unit, 1, nchar(unit) - 1) else unit)
+    }
+
+    remaining_seconds <- round(remaining_seconds)
+    mins <- remaining_seconds %/% 60
+    secs <- remaining_seconds %% 60
+    hours <- mins %/% 60
+    mins <- mins %% 60
+
+    parts <- c(
+      format_component(hours, "hours"),
+      format_component(mins, "minutes"),
+      if (hours == 0 || secs > 0) format_component(secs, "seconds") else NULL
+    )
+    duration_text <- paste(parts, collapse = " ")
+    sprintf("Estimated completion: %s (≈ %s)",
+            if (nzchar(duration_text)) duration_text else "< 1 second",
+            format(finish_time, "%H:%M:%S"))
+  }
+
   plan_info <- reactive({
     req(input$input_file)
     data_path <- tryCatch(normalizePath(input$input_file$datapath, mustWork = TRUE),
@@ -852,6 +879,7 @@ server <- function(input, output, session) {
     total_steps <- iterations_to_run
     completed <- 0L
 
+    start_time <- Sys.time()
     showModal(modalDialog(
       easyClose = FALSE, fade = TRUE, footer = NULL,
       size = "l",
@@ -870,7 +898,10 @@ server <- function(input, output, session) {
         br(),
         div(id = "progressTextModal",
             style = "font-size:18px;margin-top:20px;",
-            "Initializing...")
+            "Initializing..."),
+        div(id = "etaTextModal",
+            style = "font-size:16px;margin-top:12px;color:#1d4ed8;font-weight:500;",
+            "Estimated completion: calculating...")
       )
     ))
 
@@ -885,6 +916,14 @@ server <- function(input, output, session) {
         "progressTextModal",
         sprintf("Processing: n = %d | Iteration %d / %d", n, iter_i, iter_max)
       )
+      if (total_steps > 0 && completed > 0) {
+        elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+        est_total <- (elapsed / completed) * total_steps
+        remaining <- max(0, est_total - elapsed)
+        shinyjs::html("etaTextModal", format_eta(remaining, Sys.time() + remaining))
+      } else {
+        shinyjs::html("etaTextModal", "Estimated completion: calculating...")
+      }
       flush.console()
     }
 
@@ -904,6 +943,10 @@ server <- function(input, output, session) {
       )
       shinyWidgets::updateProgressBar(session, "progressBarModal", value = 100)
       shinyjs::html("progressTextModal", "Finalizing output...")
+      shinyjs::html(
+        "etaTextModal",
+        sprintf("Estimated completion: completed at %s", format(Sys.time(), "%H:%M:%S"))
+      )
       Sys.sleep(0.5)
       removeModal()
       if (any(plan_df$exhausted)) {
@@ -1135,6 +1178,7 @@ server <- function(input, output, session) {
 
     status_text("Running output generator...")
 
+    start_time <- Sys.time()
     showModal(modalDialog(
       easyClose = FALSE, fade = TRUE, footer = NULL,
       size = "l",
@@ -1153,7 +1197,10 @@ server <- function(input, output, session) {
         br(),
         div(id = "outputProgressTextModal",
             style = "font-size:18px;margin-top:20px;",
-            "Initializing output generator...")
+            "Initializing output generator..."),
+        div(id = "outputEtaTextModal",
+            style = "font-size:16px;margin-top:12px;color:#1d4ed8;font-weight:500;",
+            "Estimated completion: calculating...")
       )
     ))
     on.exit(removeModal(), add = TRUE)
@@ -1179,6 +1226,19 @@ server <- function(input, output, session) {
       }
 
       shinyjs::html("outputProgressTextModal", message_text)
+
+      if (!is.null(total) && is.finite(total) && total > 0 &&
+          !is.null(current) && is.finite(current) && current > 0) {
+        elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+        est_total <- (elapsed / current) * total
+        remaining <- max(0, est_total - elapsed)
+        shinyjs::html(
+          "outputEtaTextModal",
+          format_eta(remaining, Sys.time() + remaining)
+        )
+      } else {
+        shinyjs::html("outputEtaTextModal", "Estimated completion: calculating...")
+      }
     }
 
     progress_update(0, 1, NA, "Preparing output generator...")
@@ -1198,6 +1258,10 @@ server <- function(input, output, session) {
       status_text("Output generation completed successfully.")
       shinyWidgets::updateProgressBar(session, "outputProgressBarModal", value = 100)
       shinyjs::html("outputProgressTextModal", "Finalizing output files...")
+      shinyjs::html(
+        "outputEtaTextModal",
+        sprintf("Estimated completion: completed at %s", format(Sys.time(), "%H:%M:%S"))
+      )
       Sys.sleep(0.5)
       showNotification("✅ Output generation completed!", type = "message", duration = 5)
     }, error = function(e) {
