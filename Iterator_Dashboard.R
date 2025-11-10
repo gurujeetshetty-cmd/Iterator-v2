@@ -692,6 +692,26 @@ parse_of_display_values <- function(display, seg_n) {
   nums
 }
 
+normalize_of_metric_names <- function(metrics) {
+  if (is.null(metrics) || !length(metrics)) {
+    return(character(0))
+  }
+
+  upper <- toupper(metrics)
+  unique_metrics <- unique(upper[grepl("^OF_", upper)])
+  sort(unique_metrics)
+}
+
+filter_of_metric_distributions <- function(distributions) {
+  if (!length(distributions)) {
+    return(list())
+  }
+
+  names(distributions) <- toupper(names(distributions))
+  valid_idx <- grepl("^OF_", names(distributions))
+  distributions[valid_idx]
+}
+
 extract_of_metric_table <- function(rules_result, seg_n) {
   value_cols <- grep("^OF_.*_values$", names(rules_result), value = TRUE)
   if (!length(value_cols)) {
@@ -2622,7 +2642,7 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         combined_table <- build_combined_metrics_table(seg_table, of_table, var_diff_table)
         manual_state$metrics_table <- combined_table
 
-        metric_keys <- if (nrow(of_long)) sort(unique(of_long$Metric)) else character(0)
+        metric_keys <- if (nrow(of_long)) normalize_of_metric_names(of_long$Metric) else character(0)
 
         distributions <- extract_of_distributions(summary_path, segment_labels)
         if (!length(distributions) && nrow(of_long)) {
@@ -2633,10 +2653,10 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         }
 
         normalized_distributions <- prepare_of_distribution_data(distributions)
+        normalized_distributions <- filter_of_metric_distributions(normalized_distributions)
         if (length(normalized_distributions)) {
-          names(normalized_distributions) <- toupper(names(normalized_distributions))
           manual_state$of_distributions <- normalized_distributions
-          manual_state$available_of_metrics <- sort(unique(c(metric_keys, names(normalized_distributions))))
+          manual_state$available_of_metrics <- normalize_of_metric_names(c(metric_keys, names(normalized_distributions)))
         } else {
           manual_state$of_distributions <- list()
           manual_state$available_of_metrics <- metric_keys
@@ -3178,7 +3198,11 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         return()
       }
 
-      available <- toupper(names(distributions))
+      available <- manual_state$available_of_metrics
+      if (!length(available)) {
+        available <- normalize_of_metric_names(names(distributions))
+      }
+
       selected <- input$manual_of_metrics_selected %||% available
       selected <- intersect(toupper(selected), available)
       if (!length(selected)) {
@@ -3207,6 +3231,36 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           return(NULL)
         }
 
+        metric_values <- suppressWarnings(as.numeric(dist_tbl$Value))
+        metric_values <- metric_values[is.finite(metric_values)]
+        if (!length(metric_values)) {
+          return(NULL)
+        }
+
+        range_min <- min(metric_values)
+        range_max <- max(metric_values)
+        if (!is.finite(range_min) || !is.finite(range_max)) {
+          return(NULL)
+        }
+
+        if (identical(range_min, range_max)) {
+          padding <- if (range_min == 0) 0.5 else abs(range_min) * 0.05
+          if (!is.finite(padding) || padding <= 0) {
+            padding <- 0.5
+          }
+          range_min <- range_min - padding
+          range_max <- range_max + padding
+        }
+
+        bucket_count <- 20L
+        bin_edges <- seq(range_min, range_max, length.out = bucket_count + 1)
+        bin_size <- diff(bin_edges)[1]
+        if (!is.finite(bin_size) || bin_size <= 0) {
+          bin_size <- 1
+        }
+        bin_start <- bin_edges[1]
+        bin_end <- bin_edges[length(bin_edges)]
+
         segments <- unique(dist_tbl$Segment)
         segments <- segments[!is.na(segments) & nzchar(segments)]
         if (!length(segments)) {
@@ -3224,7 +3278,6 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
             return(NULL)
           }
 
-          bins <- min(25, max(5, floor(sqrt(length(cleaned)))))
           seg_header <- header_cols[[seg]] %||% "#2563EB"
           seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.82)
 
@@ -3239,12 +3292,19 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
             fill_col <- seg_fill
             border_col <- seg_header
             data_vals <- cleaned
-            nbins <- bins
+            bin_start_local <- bin_start
+            bin_end_local <- bin_end
+            bin_size_local <- bin_size
             output[[plot_id]] <- plotly::renderPlotly({
               plotly::plot_ly(
                 x = data_vals,
                 type = "histogram",
-                nbinsx = nbins,
+                autobinx = FALSE,
+                xbins = list(
+                  start = bin_start_local,
+                  end = bin_end_local,
+                  size = bin_size_local
+                ),
                 marker = list(
                   color = fill_col,
                   line = list(color = border_col, width = 0.8)
@@ -3255,7 +3315,12 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
                 plotly::layout(
                   bargap = 0.05,
                   margin = list(l = 10, r = 4, t = 6, b = 26),
-                  xaxis = list(title = "", zeroline = FALSE, showgrid = FALSE),
+                  xaxis = list(
+                    title = "",
+                    zeroline = FALSE,
+                    showgrid = FALSE,
+                    range = c(bin_start_local, bin_end_local)
+                  ),
                   yaxis = list(title = "", zeroline = FALSE, showgrid = FALSE)
                 )
             })
