@@ -397,14 +397,27 @@ ui <- dashboardPage(
             status = "primary",
             solidHeader = TRUE,
             width = 4,
-            textInput(
-              "input_file_path",
-              "poLCA Input File Path",
-              value = "C:/Users/GS36325/Documents/14 TRUQAP mBC HCP Segmentation/09 Iterator_CLEAN/poLCA_input.xlsx"
+            div(
+              class = "input-block",
+              shinyFiles::shinyFilesButton(
+                "manual_input_file",
+                "Select poLCA workbook",
+                "Browse...",
+                multiple = FALSE
+              ),
+              textOutput(
+                "manual_input_file_display",
+                container = function(...) tags$small(class = "text-muted d-block mt-2", ...)
+              )
             ),
-            actionButton("load_files", "Load Input", class = "btn btn-primary"),
-            tags$small(class = "text-muted d-block mt-2", "Provide the full path to poLCA_input.xlsx and click Load."),
-            br(),
+            div(
+              class = "input-block",
+              actionButton("load_files", "Load Input", class = "btn btn-primary"),
+              tags$small(
+                class = "text-muted d-block mt-2",
+                "Choose the poLCA_input workbook and click Load to populate variables."
+              )
+            ),
             textOutput("files_loaded"),
             hr(),
             shinyWidgets::pickerInput(
@@ -422,6 +435,14 @@ ui <- dashboardPage(
             ),
             DT::DTOutput("manual_selected_table"),
             br(),
+            div(
+              class = "input-block",
+              textInput(
+                "manual_summary_file",
+                "Manual iteration tracker filename",
+                value = "MANUAL_RUN_SUMMARY.csv"
+              )
+            ),
             numericInput("manual_num_segments", "# of Segments", value = 4, min = 2, max = 10),
             actionButton("run_manual_iteration", "Run Iteration", class = "btn btn-primary btn-block"),
             br(),
@@ -486,15 +507,23 @@ server <- function(input, output, session) {
     metadata = NULL,
     input_path = NULL,
     input_dir = NULL,
-    segment_incidence = NULL,
-    of_metrics = tibble::tibble(),
+    segment_summary = NULL,
+    of_metrics_long = tibble::tibble(),
+    of_metrics_table = tibble::tibble(),
     variable_diff = NULL,
+    variable_diff_table = tibble::tibble(),
     variable_tables = list(),
+    metrics_table = tibble::tibble(),
+    available_of_metrics = character(0),
+    of_distributions = list(),
     rendered_var_ids = character(0),
+    rendered_hist_ids = character(0),
     output_path = NULL,
+    summary_workbook = NULL,
     run_name = NULL,
     last_run_time = NULL,
-    running = FALSE
+    running = FALSE,
+    updating_vars = FALSE
   )
 
   status_text <- reactiveVal("Output generator idle.")
@@ -687,6 +716,173 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
   ordered
 }
 
+order_selected_first <- function(choices, selected) {
+  if (!length(choices)) return(choices)
+  selected <- unique(selected[selected %in% choices])
+  c(selected, setdiff(choices, selected))
+}
+
+sanitize_metric_column_name <- function(metric, segment) {
+  sanitize <- function(x) {
+    key <- gsub("[^A-Za-z0-9]+", "_", x)
+    key <- gsub("_+", "_", key)
+    key <- sub("^_+", "", key)
+    key <- sub("_+$", "", key)
+    toupper(key)
+  }
+  paste0(sanitize(metric), "__", sanitize(segment))
+}
+
+build_segment_summary_table <- function(seg_incidence) {
+  if (is.null(seg_incidence) || !nrow(seg_incidence)) {
+    return(tibble::tibble())
+  }
+
+  seg_incidence <- seg_incidence %>%
+    dplyr::mutate(
+      Segment = as.character(Segment),
+      Count = as.numeric(Count),
+      Percent = as.numeric(Percent)
+    )
+
+  segment_cols <- seg_incidence$Segment
+  counts_row <- c("Segment Size", seg_incidence$Count)
+  perc_row <- c("Percent", seg_incidence$Percent)
+
+  tbl <- tibble::as_tibble(rbind(counts_row, perc_row))
+  colnames(tbl) <- c("Metric", segment_cols)
+  tbl
+}
+
+build_of_metrics_table <- function(of_long) {
+  if (is.null(of_long) || !nrow(of_long)) {
+    return(tibble::tibble())
+  }
+
+  of_long %>%
+    dplyr::select(Metric, Segment, Value) %>%
+    dplyr::mutate(
+      Metric = as.character(Metric),
+      Segment = as.character(Segment),
+      Value = as.numeric(Value)
+    ) %>%
+    tidyr::pivot_wider(names_from = Segment, values_from = Value) %>%
+    dplyr::arrange(Metric)
+}
+
+build_variable_diff_table <- function(diff_tbl) {
+  if (is.null(diff_tbl) || !nrow(diff_tbl)) {
+    return(tibble::tibble())
+  }
+
+  diff_tbl %>%
+    tidyr::pivot_longer(-Segment, names_to = "Metric", values_to = "Value") %>%
+    dplyr::mutate(
+      Metric = as.character(Metric),
+      Segment = as.character(Segment),
+      Value = as.numeric(Value)
+    ) %>%
+    tidyr::pivot_wider(names_from = Segment, values_from = Value) %>%
+    dplyr::arrange(Metric)
+}
+
+align_metric_table <- function(tbl, segment_cols) {
+  if (is.null(tbl) || !nrow(tbl)) {
+    return(tibble::tibble())
+  }
+
+  tbl <- tbl %>% dplyr::mutate(Metric = as.character(Metric))
+  for (col in segment_cols) {
+    if (!col %in% names(tbl)) {
+      tbl[[col]] <- NA_real_
+    }
+  }
+  tbl[, c("Metric", segment_cols), drop = FALSE]
+}
+
+blank_segment_row <- function(segment_cols) {
+  if (!length(segment_cols)) {
+    return(tibble::tibble())
+  }
+  tibble::as_tibble(
+    c(list(Metric = ""), stats::setNames(as.list(rep(NA_real_, length(segment_cols))), segment_cols))
+  )
+}
+
+build_combined_metrics_table <- function(seg_table, of_table, diff_table) {
+  segment_cols <- unique(c(names(seg_table), names(of_table), names(diff_table)))
+  segment_cols <- setdiff(segment_cols, "Metric")
+  segment_cols <- segment_cols[nzchar(segment_cols)]
+
+  seg_table <- align_metric_table(seg_table, segment_cols)
+  of_table <- align_metric_table(of_table, segment_cols)
+  diff_table <- align_metric_table(diff_table, segment_cols)
+
+  pieces <- list()
+  if (nrow(seg_table)) {
+    pieces <- append(pieces, list(seg_table))
+  }
+  if (nrow(of_table)) {
+    pieces <- append(pieces, list(blank_segment_row(segment_cols), of_table))
+  }
+  if (nrow(diff_table)) {
+    pieces <- append(pieces, list(blank_segment_row(segment_cols), diff_table))
+  }
+
+  if (!length(pieces)) {
+    return(tibble::tibble())
+  }
+
+  dplyr::bind_rows(pieces)
+}
+
+extract_of_distributions <- function(summary_path, segment_labels) {
+  if (!file.exists(summary_path) || !length(segment_labels)) {
+    return(list())
+  }
+
+  raw <- tryCatch(
+    readxl::read_excel(summary_path, sheet = 1),
+    error = function(e) NULL
+  )
+
+  if (is.null(raw) || !nrow(raw)) {
+    return(list())
+  }
+
+  seg_col_idx <- which(tolower(names(raw)) %in% c("polca_seg", "segment", "segment_id", "segmentid"))
+  if (!length(seg_col_idx)) {
+    return(list())
+  }
+
+  seg_values <- suppressWarnings(as.integer(raw[[seg_col_idx[1]]]))
+  seg_map <- stats::setNames(segment_labels, seq_along(segment_labels))
+
+  valid_idx <- which(!is.na(seg_values) & as.character(seg_values) %in% names(seg_map))
+  if (!length(valid_idx)) {
+    return(list())
+  }
+
+  of_cols <- grep("^OF_", names(raw), value = TRUE)
+  if (!length(of_cols)) {
+    return(list())
+  }
+
+  distributions <- list()
+  for (col in of_cols) {
+    metric_key <- toupper(col)
+    values <- suppressWarnings(as.numeric(raw[[col]]))
+    seg_labels <- seg_map[as.character(seg_values)]
+    tbl <- tibble::tibble(Segment = seg_labels, Value = values) %>%
+      dplyr::filter(!is.na(Segment) & !is.na(Value))
+    if (nrow(tbl)) {
+      distributions[[metric_key]] <- tbl
+    }
+  }
+
+  distributions
+}
+
   shinyFiles::shinyFileChoose(
     input, "xtabs_input_file",
     roots = volumes,
@@ -698,6 +894,13 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
     roots = volumes,
     session = session,
     filetypes = c("csv")
+  )
+
+  shinyFiles::shinyFileChoose(
+    input, "manual_input_file",
+    roots = volumes,
+    session = session,
+    filetypes = c("xlsx", "xls", "xlsm")
   )
 
 
@@ -1271,6 +1474,37 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
     append_log(sprintf("Combinations sheet set to: %s", normalized_path))
   })
 
+  observeEvent(input$manual_input_file, {
+    if (is.null(input$manual_input_file)) {
+      return()
+    }
+
+    selected <- shinyFiles::parseFilePaths(volumes, input$manual_input_file)
+    if (!nrow(selected)) {
+      return()
+    }
+
+    selected_path <- as.character(selected$datapath[1])
+    if (!length(selected_path) || is.na(selected_path)) {
+      return()
+    }
+
+    normalized_path <- tryCatch(
+      normalizePath(selected_path, winslash = "/", mustWork = FALSE),
+      error = function(e) selected_path
+    )
+
+    normalized_dir <- tryCatch(
+      normalizePath(dirname(normalized_path), winslash = "/", mustWork = FALSE),
+      error = function(e) dirname(normalized_path)
+    )
+
+    manual_state$input_path <- normalized_path
+    manual_state$input_dir <- normalized_dir
+
+    append_log(sprintf("Manual runner workbook selected: %s", normalized_path))
+  })
+
   output$xtabs_input_file_display <- renderText({
     if (is.null(rv_paths$xtabs_path)) {
       "Selected poLCA file: (none)"
@@ -1284,6 +1518,14 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       "Selected combinations sheet: (none)"
     } else {
       paste0("Selected combinations sheet: ", rv_paths$combos_path)
+    }
+  })
+
+  output$manual_input_file_display <- renderText({
+    if (is.null(manual_state$input_path)) {
+      "Selected poLCA workbook: (none)"
+    } else {
+      paste0("Selected poLCA workbook: ", manual_state$input_path)
     }
   })
 
@@ -1554,23 +1796,32 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
   })
 
   output$manual_save_info <- renderUI({
-    if (is.null(manual_state$output_path)) {
+    if (is.null(manual_state$output_path) && is.null(manual_state$summary_workbook)) {
       return(tags$span(class = "text-muted", "Run an iteration to generate manual outputs."))
+    }
+
+    tracker_path <- manual_state$output_path %||% ""
+    summary_path <- manual_state$summary_workbook %||% ""
+    tracker_label <- if (nzchar(tracker_path)) basename(tracker_path) else "Not saved"
+    summary_label <- if (nzchar(summary_path)) basename(summary_path) else "Not saved"
+    location <- if (nzchar(summary_path)) dirname(summary_path) else dirname(tracker_path)
+    if (!nzchar(location) || identical(location, ".")) {
+      location <- ""
     }
 
     tags$div(
       tags$strong("Last manual run"),
       tags$br(),
-      tags$span(sprintf("Run name: %s", manual_state$run_name)),
+      tags$span(sprintf("Run name: %s", manual_state$run_name %||% "-")),
       tags$br(),
-      tags$span(sprintf("Saved CSV: %s", basename(manual_state$output_path))),
+      tags$span(sprintf("Summary workbook: %s", summary_label)),
       tags$br(),
-      tags$span(sprintf("Location: %s", manual_state$output_path)),
-      if (!is.null(manual_state$last_run_time)) {
-        tags$br()
+      tags$span(sprintf("Tracker file: %s", tracker_label)),
+      if (nzchar(location)) {
+        tagList(tags$br(), tags$span(sprintf("Output location: %s", location)))
       },
       if (!is.null(manual_state$last_run_time)) {
-        tags$span(sprintf("Completed at: %s", format(manual_state$last_run_time, "%Y-%m-%d %H:%M:%S")))
+        tagList(tags$br(), tags$span(sprintf("Completed at: %s", format(manual_state$last_run_time, "%Y-%m-%d %H:%M:%S"))))
       }
     )
   })
@@ -1584,11 +1835,12 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
 
   observeEvent(input$load_files, {
     manual_state$metadata <- NULL
-    manual_state$input_path <- NULL
-    manual_state$input_dir <- NULL
-    manual_state$segment_incidence <- NULL
-    manual_state$of_metrics <- tibble::tibble()
+    manual_state$segment_summary <- NULL
+    manual_state$of_metrics_long <- tibble::tibble()
+    manual_state$of_metrics_table <- tibble::tibble()
+    manual_state$metrics_table <- tibble::tibble()
     manual_state$variable_diff <- NULL
+    manual_state$variable_diff_table <- tibble::tibble()
     manual_state$variable_tables <- list()
     if (length(manual_state$rendered_var_ids)) {
       for (id in manual_state$rendered_var_ids) {
@@ -1596,7 +1848,16 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       }
     }
     manual_state$rendered_var_ids <- character(0)
+    if (length(manual_state$rendered_hist_ids)) {
+      for (id in manual_state$rendered_hist_ids) {
+        output[[id]] <- NULL
+      }
+    }
+    manual_state$rendered_hist_ids <- character(0)
+    manual_state$available_of_metrics <- character(0)
+    manual_state$of_distributions <- list()
     manual_state$output_path <- NULL
+    manual_state$summary_workbook <- NULL
     manual_state$run_name <- NULL
     manual_state$last_run_time <- NULL
     manual_state$running <- FALSE
@@ -1608,17 +1869,16 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       selected = character(0)
     )
 
-    path_raw <- input$input_file_path
-    if (is.null(path_raw) || !nzchar(path_raw)) {
-      output$files_loaded <- renderText("Please provide a valid path to poLCA_input.xlsx.")
+    normalized <- manual_state$input_path
+    if (is.null(normalized) || !nzchar(normalized)) {
+      output$files_loaded <- renderText("Select a poLCA workbook using Browse before loading.")
       return()
     }
 
-    normalized <- normalize_if_exists(path_raw)
     if (!file.exists(normalized)) {
       append_log(sprintf("Manual runner: file not found at %s", normalized), "ERROR")
-      output$files_loaded <- renderText(sprintf("❌ File not found: %s", path_raw))
-      showNotification(sprintf("❌ File not found: %s", path_raw), type = "error", duration = 8)
+      output$files_loaded <- renderText(sprintf("❌ File not found: %s", normalized))
+      showNotification(sprintf("❌ File not found: %s", normalized), type = "error", duration = 8)
       return()
     }
 
@@ -1632,12 +1892,14 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       manual_state$input_path <- normalized
       manual_state$input_dir <- dirname(normalized)
 
+      manual_state$updating_vars <- TRUE
       shinyWidgets::updatePickerInput(
         session,
         "manual_variables",
         choices = setNames(metadata$variable, metadata$variable),
         selected = character(0)
       )
+      manual_state$updating_vars <- FALSE
 
       output$files_loaded <- renderText(sprintf(
         "Loaded %d variables from %s. Select variables below.",
@@ -1650,11 +1912,47 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       manual_state$metadata <- NULL
       manual_state$input_path <- NULL
       manual_state$input_dir <- NULL
+      manual_state$available_of_metrics <- character(0)
+      manual_state$of_distributions <- list()
+      manual_state$of_metrics_long <- tibble::tibble()
+      manual_state$of_metrics_table <- tibble::tibble()
+      manual_state$metrics_table <- tibble::tibble()
+      manual_state$variable_diff <- NULL
+      manual_state$variable_diff_table <- tibble::tibble()
+      manual_state$summary_workbook <- NULL
+      manual_state$output_path <- NULL
       output$files_loaded <- renderText(sprintf("❌ %s", e$message))
       append_log(sprintf("Manual runner load error: %s", e$message), "ERROR")
       showNotification(paste("❌", e$message), type = "error", duration = 8)
     })
   })
+
+  observeEvent(input$manual_variables, {
+    metadata <- manual_state$metadata
+    if (is.null(metadata) || !nrow(metadata)) {
+      return()
+    }
+
+    if (isTRUE(manual_state$updating_vars)) {
+      return()
+    }
+
+    choices <- metadata$variable
+    selected <- input$manual_variables %||% character(0)
+    ordered <- order_selected_first(choices, selected)
+    if (identical(ordered, choices)) {
+      return()
+    }
+
+    manual_state$updating_vars <- TRUE
+    shinyWidgets::updatePickerInput(
+      session,
+      "manual_variables",
+      choices = setNames(ordered, ordered),
+      selected = selected
+    )
+    manual_state$updating_vars <- FALSE
+  }, ignoreNULL = FALSE)
 
   observeEvent(input$run_manual_iteration, {
     req(manual_state$metadata, manual_state$input_path)
@@ -1770,8 +2068,17 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
             dplyr::select(Segment, Count, Percent)
         }
 
-        manual_state$segment_incidence <- seg_incidence
-        manual_state$of_metrics <- extract_of_metric_table(rules_result, max(1, seg_n))
+        manual_state$segment_summary <- seg_incidence
+
+        of_long <- extract_of_metric_table(rules_result, max(1, seg_n))
+        if (nrow(of_long)) {
+          of_long <- of_long %>%
+            dplyr::mutate(
+              Metric = toupper(Metric),
+              Segment = as.character(Segment)
+            )
+        }
+        manual_state$of_metrics_long <- of_long
 
         fetch_metric <- function(fmt) {
           vapply(seq_len(max(1, seg_n)), function(idx) {
@@ -1784,7 +2091,7 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
         }
 
         seg_labels <- paste0("Segment ", seq_len(max(1, seg_n)))
-        manual_state$variable_diff <- tibble::tibble(
+        variable_diff_tbl <- tibble::tibble(
           Segment = seg_labels,
           `Differentiating Vars` = fetch_metric("seg%d_diff"),
           `Bimodal Vars` = fetch_metric("bi_%d"),
@@ -1792,6 +2099,40 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
           `Indicator Top` = fetch_metric("indT_%d"),
           `Indicator Bottom` = fetch_metric("indB_%d")
         )
+
+        manual_state$variable_diff <- variable_diff_tbl
+
+        seg_table <- build_segment_summary_table(seg_incidence)
+        of_table <- build_of_metrics_table(of_long)
+        manual_state$of_metrics_table <- of_table
+        var_diff_table <- build_variable_diff_table(variable_diff_tbl)
+        manual_state$variable_diff_table <- var_diff_table
+        combined_table <- build_combined_metrics_table(seg_table, of_table, var_diff_table)
+        manual_state$metrics_table <- combined_table
+
+        manual_state$available_of_metrics <- if (nrow(of_long)) sort(unique(of_long$Metric)) else character(0)
+
+        distributions <- extract_of_distributions(summary_path, seg_incidence$Segment)
+        if (length(distributions)) {
+          names(distributions) <- toupper(names(distributions))
+          manual_state$of_distributions <- distributions
+          manual_state$available_of_metrics <- sort(unique(c(manual_state$available_of_metrics, names(distributions))))
+        } else {
+          manual_state$of_distributions <- list()
+        }
+
+        if (nrow(combined_table)) {
+          try({
+            wb <- openxlsx::loadWorkbook(summary_path)
+            sheet_name <- "Manual Metrics"
+            if (sheet_name %in% openxlsx::getSheetNames(wb)) {
+              openxlsx::removeWorksheet(wb, sheet_name)
+            }
+            openxlsx::addWorksheet(wb, sheet_name)
+            openxlsx::writeData(wb, sheet_name, combined_table)
+            openxlsx::saveWorkbook(wb, summary_path, overwrite = TRUE)
+          }, silent = TRUE)
+        }
 
         incProgress(0.75, detail = "Extracting variable summaries")
         var_tables <- extract_manual_variable_tables(summary_path, selection$variable)
@@ -1833,6 +2174,33 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
           ITR_PATH = manual_run_dir,
           ITR_FILE_NAME = summary_basename
         )
+
+        if (nrow(seg_incidence)) {
+          for (idx in seq_len(nrow(seg_incidence))) {
+            manual_row[[paste0("Segment_", idx, "_Count")]] <- seg_incidence$Count[idx]
+            manual_row[[paste0("Segment_", idx, "_Percent")]] <- seg_incidence$Percent[idx]
+          }
+        }
+
+        if (nrow(of_table)) {
+          segment_cols <- setdiff(names(of_table), "Metric")
+          for (r in seq_len(nrow(of_table))) {
+            metric_name <- of_table$Metric[r]
+            for (seg_col in segment_cols) {
+              manual_row[[sanitize_metric_column_name(metric_name, seg_col)]] <- of_table[[seg_col]][r]
+            }
+          }
+        }
+
+        if (nrow(var_diff_table)) {
+          segment_cols <- setdiff(names(var_diff_table), "Metric")
+          for (r in seq_len(nrow(var_diff_table))) {
+            metric_name <- var_diff_table$Metric[r]
+            for (seg_col in segment_cols) {
+              manual_row[[sanitize_metric_column_name(metric_name, seg_col)]] <- var_diff_table[[seg_col]][r]
+            }
+          }
+        }
 
         metric_map <- c(
           MAX_N_SIZE = "Max_n_size",
@@ -1892,7 +2260,9 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
         ordered_cols <- unique(c(
           "Iteration", "n_size", "Combination", "Total_Score", "Avg_Score", "Var_cols",
           base_add_cols,
+          sort(grep("^Segment_\\d+_", names(manual_df), value = TRUE)),
           sort(grep("^OF_", names(manual_df), value = TRUE)),
+          sort(grep("__SEGMENT_", names(manual_df), value = TRUE)),
           input_perf_cols
         ))
 
@@ -1900,16 +2270,61 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
         leftover_cols <- setdiff(names(manual_df), ordered_cols)
         manual_df <- manual_df[, c(ordered_cols, leftover_cols), drop = FALSE]
 
-        manual_output_path <- file.path(manual_run_dir, paste0(run_name, "_SUMMARY.csv"))
-        utils::write.table(manual_df, file = manual_output_path, sep = ",", row.names = FALSE, col.names = TRUE, na = "")
+        tracker_name <- input$manual_summary_file %||% ""
+        tracker_name <- trimws(if (is.null(tracker_name)) "" else tracker_name)
+        if (!nzchar(tracker_name)) {
+          tracker_name <- "MANUAL_RUN_SUMMARY.csv"
+        }
+        if (!grepl("\\.csv$", tracker_name, ignore.case = TRUE)) {
+          tracker_name <- paste0(tracker_name, ".csv")
+        }
+        tracker_name <- basename(tracker_name)
 
-        manual_state$output_path <- manual_output_path
+        manual_tracker_path <- file.path(manual_run_dir, tracker_name)
+
+        if (file.exists(manual_tracker_path)) {
+          existing_df <- tryCatch(
+            utils::read.csv(manual_tracker_path, stringsAsFactors = FALSE, check.names = FALSE),
+            error = function(e) NULL
+          )
+        } else {
+          existing_df <- NULL
+        }
+
+        if (!is.null(existing_df) && nrow(existing_df)) {
+          missing_in_existing <- setdiff(names(manual_df), names(existing_df))
+          for (col in missing_in_existing) {
+            existing_df[[col]] <- NA
+          }
+          missing_in_new <- setdiff(names(existing_df), names(manual_df))
+          for (col in missing_in_new) {
+            manual_df[[col]] <- NA
+          }
+          manual_df <- manual_df[, names(existing_df), drop = FALSE]
+          combined_df <- rbind(existing_df, manual_df)
+        } else {
+          combined_df <- manual_df
+        }
+
+        utils::write.table(combined_df, file = manual_tracker_path, sep = ",", row.names = FALSE, col.names = TRUE, na = "")
+
+        manual_state$output_path <- manual_tracker_path
+        manual_state$summary_workbook <- summary_path
         manual_state$run_name <- run_name
         manual_state$last_run_time <- Sys.time()
 
+        incProgress(0.95, detail = "Updating iteration tracker")
         incProgress(1, detail = "Manual run complete")
-        append_log(sprintf("Manual iteration completed. Output saved to %s", manual_output_path))
-        showNotification(sprintf("✅ Manual iteration complete. Saved to %s", basename(manual_output_path)), type = "message", duration = 6)
+        append_log(sprintf("Manual iteration completed. Summary: %s | Tracker: %s", summary_basename, basename(manual_tracker_path)))
+        showNotification(
+          sprintf(
+            "✅ Manual iteration complete. Summary workbook: %s. Tracker updated: %s",
+            basename(summary_path),
+            basename(manual_tracker_path)
+          ),
+          type = "message",
+          duration = 6
+        )
       })
     }, error = function(e) {
       append_log(sprintf("Manual iteration error: %s", e$message), "ERROR")
@@ -1933,20 +2348,69 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       sections <- append(sections, list(
         tags$div(
           class = "manual-metric-section",
-          tags$h4("Segment Incidence"),
-          DT::DTOutput("manual_segment_incidence")
+          tags$h4("Segment & Objective Summary"),
+          DT::DTOutput("manual_metrics_table")
         )
       ))
     }
 
     if ("OF Spread" %in% metrics) {
-      sections <- append(sections, list(
-        tags$div(
-          class = "manual-metric-section",
-          tags$h4("OF Spread"),
-          plotly::plotlyOutput("manual_of_spread")
-        )
-      ))
+      of_choices <- manual_state$available_of_metrics
+      if (!length(of_choices)) {
+        sections <- append(sections, list(
+          tags$div(
+            class = "manual-metric-section",
+            tags$h4("Objective Function Metrics"),
+            tags$span(class = "text-muted", "Objective function metrics unavailable for this run.")
+          )
+        ))
+      } else {
+        selected_metrics <- input$manual_of_metrics_selected %||% of_choices
+        selected_metrics <- intersect(toupper(selected_metrics), of_choices)
+        if (!length(selected_metrics)) selected_metrics <- of_choices
+        selected_metric <- input$manual_of_metric_choice %||% of_choices[1]
+        if (!(toupper(selected_metric) %in% of_choices)) {
+          selected_metric <- of_choices[1]
+        } else {
+          selected_metric <- toupper(selected_metric)
+        }
+
+        display_choices <- gsub("_", " ", of_choices)
+        named_choices <- stats::setNames(of_choices, display_choices)
+
+        sections <- append(sections, list(
+          tags$div(
+            class = "manual-metric-section",
+            tags$h4("Objective Function Metrics"),
+            fluidRow(
+              column(
+                width = 6,
+                shinyWidgets::pickerInput(
+                  "manual_of_metrics_selected",
+                  "Select objective function metrics",
+                  choices = named_choices,
+                  selected = selected_metrics,
+                  multiple = TRUE,
+                  options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                )
+              ),
+              column(
+                width = 6,
+                shinyWidgets::pickerInput(
+                  "manual_of_metric_choice",
+                  "Metric for distribution",
+                  choices = named_choices,
+                  selected = selected_metric,
+                  multiple = FALSE,
+                  options = list(`live-search` = TRUE)
+                )
+              )
+            ),
+            DT::DTOutput("manual_of_table"),
+            uiOutput("manual_of_histograms")
+          )
+        ))
+      }
     }
 
     if ("Variable Differentiation" %in% metrics) {
@@ -1954,7 +2418,7 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
         tags$div(
           class = "manual-metric-section",
           tags$h4("Variable Differentiation"),
-          DT::DTOutput("manual_variable_diff")
+          DT::DTOutput("manual_variable_diff_table")
         )
       ))
     }
@@ -1980,55 +2444,107 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
     do.call(tagList, sections)
   })
 
-  output$manual_segment_incidence <- DT::renderDT({
+  format_manual_metric_table <- function(data_tbl) {
+    if (is.null(data_tbl) || !nrow(data_tbl)) {
+      return(NULL)
+    }
+
+    display <- data_tbl
+    segment_cols <- setdiff(names(display), "Metric")
+    if (!length(segment_cols)) {
+      return(display)
+    }
+
+    for (col in segment_cols) {
+      raw_vals <- display[[col]]
+      numeric_vals <- suppressWarnings(as.numeric(raw_vals))
+      formatted <- as.character(raw_vals)
+      formatted[is.na(formatted)] <- "-"
+      blank_rows <- !nzchar(display$Metric)
+      formatted[blank_rows] <- ""
+
+      percent_rows <- tolower(display$Metric) == "percent" & !is.na(numeric_vals)
+      size_rows <- tolower(display$Metric) == "segment size" & !is.na(numeric_vals)
+      numeric_rows <- !percent_rows & !size_rows & !is.na(numeric_vals)
+
+      formatted[percent_rows] <- sprintf("%.1f%%", numeric_vals[percent_rows])
+      formatted[size_rows] <- format(round(numeric_vals[size_rows]), big.mark = ",", trim = TRUE)
+      formatted[numeric_rows] <- sprintf("%.2f", numeric_vals[numeric_rows])
+      formatted[is.na(numeric_vals) & !blank_rows] <- "-"
+
+      display[[col]] <- formatted
+    }
+
+    display
+  }
+
+  output$manual_metrics_table <- DT::renderDT({
     req(manual_state$run_name)
-    data <- manual_state$segment_incidence
-    if (is.null(data) || !nrow(data)) {
+    data_tbl <- manual_state$metrics_table
+    if (is.null(data_tbl) || !nrow(data_tbl)) {
       return(DT::datatable(
-        data.frame(Message = "Segment incidence unavailable for this run."),
+        data.frame(Message = "Metrics unavailable for this run."),
         options = list(dom = "t"),
         rownames = FALSE
       ))
     }
 
-    display <- data %>%
-      dplyr::mutate(
-        Percent = ifelse(is.na(Percent), "-", sprintf("%.1f%%", Percent))
-      )
+    display <- format_manual_metric_table(data_tbl)
 
     DT::datatable(
       display,
       options = list(dom = "t", paging = FALSE, ordering = FALSE),
-      rownames = FALSE
+      rownames = FALSE,
+      escape = FALSE
     )
   })
 
-  output$manual_of_spread <- plotly::renderPlotly({
+  output$manual_of_table <- DT::renderDT({
     req(manual_state$run_name)
-    df <- manual_state$of_metrics
-    validate(need(nrow(df) > 0, "Objective function metrics unavailable for this run."))
-    df <- df %>% dplyr::filter(!is.na(Value))
-    validate(need(nrow(df) > 0, "No objective function values to plot."))
+    of_table <- manual_state$of_metrics_table
+    if (is.null(of_table) || !nrow(of_table)) {
+      return(DT::datatable(
+        data.frame(Message = "Objective function metrics unavailable for this run."),
+        options = list(dom = "t"),
+        rownames = FALSE
+      ))
+    }
 
-    plotly::plot_ly(df, x = ~Segment, y = ~Value, color = ~Metric, type = "scatter", mode = "lines+markers",
-                    fill = "tozeroy", text = ~paste0(
-                      "Metric: ", Metric,
-                      "<br>Segment: ", Segment,
-                      "<br>Value: ", round(Value, 2),
-                      "<br>Diff Max: ", round(DiffMax, 2),
-                      "<br>Diff Min: ", round(DiffMin, 2)
-                    ), hoverinfo = "text") %>%
-      plotly::layout(
-        xaxis = list(title = "Segment"),
-        yaxis = list(title = "OF Score"),
-        legend = list(orientation = "h", x = 0, y = -0.2)
-      )
+    available <- manual_state$available_of_metrics
+    selected <- input$manual_of_metrics_selected %||% available
+    selected <- intersect(toupper(selected), available)
+    if (!length(selected)) {
+      selected <- available
+    }
+
+    display <- of_table %>% dplyr::filter(Metric %in% selected)
+    if (!nrow(display)) {
+      return(DT::datatable(
+        data.frame(Message = "No objective function metrics selected."),
+        options = list(dom = "t"),
+        rownames = FALSE
+      ))
+    }
+
+    segment_cols <- setdiff(names(display), "Metric")
+    for (col in segment_cols) {
+      numeric_vals <- suppressWarnings(as.numeric(display[[col]]))
+      formatted <- ifelse(is.na(numeric_vals), "-", sprintf("%.2f", numeric_vals))
+      display[[col]] <- formatted
+    }
+
+    DT::datatable(
+      display,
+      options = list(dom = "t", paging = FALSE, ordering = FALSE),
+      rownames = FALSE,
+      escape = FALSE
+    )
   })
 
-  output$manual_variable_diff <- DT::renderDT({
+  output$manual_variable_diff_table <- DT::renderDT({
     req(manual_state$run_name)
-    data <- manual_state$variable_diff
-    if (is.null(data) || !nrow(data)) {
+    diff_table <- manual_state$variable_diff_table
+    if (is.null(diff_table) || !nrow(diff_table)) {
       return(DT::datatable(
         data.frame(Message = "Variable differentiation metrics unavailable."),
         options = list(dom = "t"),
@@ -2036,15 +2552,110 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
       ))
     }
 
-    display <- data %>%
-      dplyr::mutate(dplyr::across(-Segment, ~ ifelse(is.na(.), "-", as.character(round(., 2)))))
+    segment_cols <- setdiff(names(diff_table), "Metric")
+    display <- diff_table
+    for (col in segment_cols) {
+      numeric_vals <- suppressWarnings(as.numeric(display[[col]]))
+      formatted <- ifelse(is.na(numeric_vals), "-", sprintf("%.2f", numeric_vals))
+      display[[col]] <- formatted
+    }
 
     DT::datatable(
       display,
-      options = list(dom = "t", paging = FALSE, ordering = FALSE, scrollX = TRUE),
-      rownames = FALSE
+      options = list(dom = "t", paging = FALSE, ordering = FALSE),
+      rownames = FALSE,
+      escape = FALSE
     )
   })
+
+  observeEvent(
+    list(input$manual_of_metric_choice, manual_state$of_distributions, manual_state$run_name),
+    {
+      metric_raw <- input$manual_of_metric_choice %||% ""
+      distributions <- manual_state$of_distributions
+
+      if (length(manual_state$rendered_hist_ids)) {
+        for (id in manual_state$rendered_hist_ids) {
+          output[[id]] <- NULL
+        }
+      }
+
+      if (is.null(distributions) || !length(distributions)) {
+        manual_state$rendered_hist_ids <- character(0)
+        output$manual_of_histograms <- renderUI({
+          div(class = "text-muted", "Select an objective function metric to view distributions.")
+        })
+        return()
+      }
+
+      metric_key <- toupper(metric_raw)
+      dist_tbl <- distributions[[metric_key]]
+
+      if (is.null(dist_tbl) || !nrow(dist_tbl)) {
+        manual_state$rendered_hist_ids <- character(0)
+        output$manual_of_histograms <- renderUI({
+          div(class = "text-muted", "Select an objective function metric to view distributions.")
+        })
+        return()
+      }
+
+      segments <- unique(dist_tbl$Segment)
+      segments <- segments[!is.na(segments) & nzchar(segments)]
+      if (!length(segments)) {
+        manual_state$rendered_hist_ids <- character(0)
+        output$manual_of_histograms <- renderUI({
+          div(class = "text-muted", "Objective function distribution data unavailable for this metric.")
+        })
+        return()
+      }
+
+      hist_ids <- character(0)
+      column_width <- max(2, floor(12 / length(segments)))
+
+      plot_columns <- lapply(seq_along(segments), function(idx) {
+        seg_label <- segments[idx]
+        plot_id <- sanitize_manual_id(paste0("hist_", metric_key, "_", seg_label, "_", idx))
+        hist_ids <<- c(hist_ids, plot_id)
+
+        values <- dist_tbl %>%
+          dplyr::filter(Segment == seg_label) %>%
+          dplyr::pull(Value)
+
+        local({
+          seg <- seg_label
+          vals <- values
+          metric_title <- metric_key
+          output[[plot_id]] <- plotly::renderPlotly({
+            cleaned <- suppressWarnings(as.numeric(vals))
+            cleaned <- cleaned[!is.na(cleaned)]
+            validate(need(length(cleaned) > 0, paste("No data available for", seg)))
+            bins <- min(30, max(5, floor(sqrt(length(cleaned)))))
+            plotly::plot_ly(
+              x = cleaned,
+              type = "histogram",
+              nbinsx = bins,
+              marker = list(color = "#2563eb", line = list(color = "#1d4ed8", width = 1)),
+              opacity = 0.75
+            ) %>%
+              plotly::layout(
+                title = seg,
+                xaxis = list(title = metric_title),
+                yaxis = list(title = "Respondents"),
+                bargap = 0.05
+              )
+          })
+        })
+
+        column(width = column_width, plotly::plotlyOutput(plot_id, height = "240px"))
+      })
+
+      manual_state$rendered_hist_ids <- hist_ids
+      output$manual_of_histograms <- renderUI({
+        do.call(fluidRow, plot_columns)
+      })
+    },
+    ignoreNULL = FALSE
+  )
 }
 
 # =========================================================
