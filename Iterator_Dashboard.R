@@ -1027,11 +1027,12 @@ build_segment_summary_table <- function(seg_incidence) {
     )
 
   segment_cols <- seg_incidence$Segment
-  counts_row <- c("Segment Size", seg_incidence$Count)
-  perc_row <- c("Percent", seg_incidence$Percent)
+  tbl <- tibble::tibble(Metric = c("Segment Size", "Percent"))
+  for (idx in seq_along(segment_cols)) {
+    seg_name <- segment_cols[[idx]]
+    tbl[[seg_name]] <- c(seg_incidence$Count[[idx]], seg_incidence$Percent[[idx]])
+  }
 
-  tbl <- tibble::as_tibble(rbind(counts_row, perc_row))
-  colnames(tbl) <- c("Metric", segment_cols)
   tbl
 }
 
