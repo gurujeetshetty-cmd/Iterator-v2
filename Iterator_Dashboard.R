@@ -186,6 +186,24 @@ ui <- dashboardPage(
           padding: 12px 16px;
           margin-bottom: 18px;
         }
+        .of-hist-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: 12px;
+        }
+        .of-mini-hist {
+          background: #ffffff;
+          border-radius: 10px;
+          border: 1px solid rgba(148, 163, 184, 0.25);
+          padding: 10px 12px 8px 12px;
+          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+        }
+        .of-mini-title {
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 6px;
+          color: #0f172a;
+        }
         .of-metric-title {
           font-weight: 600;
           margin-bottom: 8px;
@@ -557,7 +575,13 @@ server <- function(input, output, session) {
       segs <- setdiff(names(manual_state$metrics_table), "Metric")
     }
     segs <- segs[nzchar(segs)]
-    segment_color_palette(segs)
+    palette <- segment_color_palette(segs)
+    if (!length(palette)) {
+      return(list(header = character(0), cell = character(0)))
+    }
+
+    cell_cols <- vapply(palette, lighten_color, character(1), amount = 0.68)
+    list(header = palette, cell = cell_cols)
   })
 
   status_text <- reactiveVal("Output generator idle.")
@@ -566,18 +590,22 @@ server <- function(input, output, session) {
 
   output$manual_segment_styles <- renderUI({
     colors <- segment_colors()
-    if (!length(colors)) {
+    header_cols <- colors$header %||% character(0)
+    if (!length(header_cols)) {
       return(NULL)
     }
 
-    css_rules <- purrr::imap_chr(colors, function(col, seg) {
+    cell_cols <- colors$cell %||% character(0)
+
+    css_rules <- purrr::map_chr(names(header_cols), function(seg) {
       cls <- segment_css_class(seg)
-      text_col <- segment_text_contrast(col)
+      header_col <- header_cols[[seg]]
+      cell_col <- cell_cols[[seg]] %||% lighten_color(header_col, 0.68)
+      header_text <- segment_text_contrast(header_col)
+      cell_text <- segment_text_contrast(cell_col)
       sprintf(
-        ".segment-cell-%s { background-color: %s !important; color: %s !important; }
-.segment-header-%s { background-color: %s !important; color: %s !important; }
-        ",
-        cls, col, text_col, cls, col, text_col
+        ".segment-cell-%s { background-color: %s !important; color: %s !important; }\n.segment-header-%s { background-color: %s !important; color: %s !important; }\n        ",
+        cls, cell_col, cell_text, cls, header_col, header_text
       )
     })
 
@@ -799,8 +827,9 @@ segment_color_palette <- function(labels) {
   }
 
   base_palette <- c(
-    "#2563EB", "#0EA5E9", "#8B5CF6", "#10B981", "#F59E0B",
-    "#EC4899", "#14B8A6", "#F97316", "#22C55E", "#6366F1"
+    "#1D4ED8", "#0EA5E9", "#7C3AED", "#059669", "#D97706",
+    "#DC2626", "#0891B2", "#2563EB", "#16A34A", "#6D28D9",
+    "#BE123C", "#0F766E", "#9D174D", "#EA580C", "#0369A1"
   )
 
   if (length(labels) > length(base_palette)) {
@@ -810,7 +839,33 @@ segment_color_palette <- function(labels) {
     colors <- base_palette[seq_len(length(labels))]
   }
 
-  stats::setNames(colors, labels)
+  hashed <- vapply(labels, function(lbl) {
+    ints <- utf8ToInt(lbl)
+    if (!length(ints)) return(0L)
+    sum((ints * seq_along(ints)) %% 9973L)
+  }, integer(1))
+
+  order_idx <- order((hashed %% 7919L) + seq_along(labels) / 1000)
+  shuffled <- colors[order_idx]
+  assigned <- shuffled[match(seq_along(labels), order_idx)]
+
+  stats::setNames(assigned, labels)
+}
+
+mix_colors <- function(base, overlay, weight = 0.5) {
+  safe_col <- function(col) {
+    tryCatch(grDevices::col2rgb(col) / 255, error = function(...) matrix(c(0, 0, 0), nrow = 3))
+  }
+
+  b <- safe_col(base)
+  o <- safe_col(overlay)
+  mixed <- b * (1 - weight) + o * weight
+  grDevices::rgb(mixed[1, ], mixed[2, ], mixed[3, ])
+}
+
+lighten_color <- function(color, amount = 0.65) {
+  amount <- max(0, min(1, amount))
+  mix_colors(color, "#FFFFFF", amount)
 }
 
 segment_css_class <- function(label) {
@@ -2420,26 +2475,6 @@ extract_of_distributions <- function(summary_path, segment_labels) {
           }
         }
 
-        if (nrow(of_table)) {
-          segment_cols <- setdiff(names(of_table), "Metric")
-          for (r in seq_len(nrow(of_table))) {
-            metric_name <- of_table$Metric[r]
-            for (seg_col in segment_cols) {
-              manual_row[[sanitize_metric_column_name(metric_name, seg_col)]] <- of_table[[seg_col]][r]
-            }
-          }
-        }
-
-        if (nrow(var_diff_table)) {
-          segment_cols <- setdiff(names(var_diff_table), "Metric")
-          for (r in seq_len(nrow(var_diff_table))) {
-            metric_name <- var_diff_table$Metric[r]
-            for (seg_col in segment_cols) {
-              manual_row[[sanitize_metric_column_name(metric_name, seg_col)]] <- var_diff_table[[seg_col]][r]
-            }
-          }
-        }
-
         metric_map <- c(
           MAX_N_SIZE = "Max_n_size",
           MAX_N_SIZE_PERC = "Max_n_size_perc",
@@ -2483,6 +2518,11 @@ extract_of_distributions <- function(summary_path, segment_labels) {
 
         manual_df <- as.data.frame(manual_row, stringsAsFactors = FALSE)
 
+        segment_metric_cols <- grep("__SEGMENT_", names(manual_df), value = TRUE)
+        if (length(segment_metric_cols)) {
+          manual_df <- manual_df[, setdiff(names(manual_df), segment_metric_cols), drop = FALSE]
+        }
+
         base_add_cols <- c(
           "Ran_Iteration_Flag", "ITR_PATH", "ITR_FILE_NAME", "MAX_N_SIZE", "MAX_N_SIZE_PERC",
           "MIN_N_SIZE", "MIN_N_SIZE_PERC", "SOLUTION_N_SIZE", "PROB_95", "PROB_90", "PROB_80",
@@ -2500,7 +2540,6 @@ extract_of_distributions <- function(summary_path, segment_labels) {
           base_add_cols,
           sort(grep("^Segment_\\d+_", names(manual_df), value = TRUE)),
           sort(grep("^OF_", names(manual_df), value = TRUE)),
-          sort(grep("__SEGMENT_", names(manual_df), value = TRUE)),
           input_perf_cols
         ))
 
@@ -2525,6 +2564,12 @@ extract_of_distributions <- function(summary_path, segment_labels) {
             utils::read.csv(manual_tracker_path, stringsAsFactors = FALSE, check.names = FALSE),
             error = function(e) NULL
           )
+          if (!is.null(existing_df) && nrow(existing_df)) {
+            drop_cols <- grep("__SEGMENT_", names(existing_df), value = TRUE)
+            if (length(drop_cols)) {
+              existing_df <- existing_df[, setdiff(names(existing_df), drop_cols), drop = FALSE]
+            }
+          }
         } else {
           existing_df <- NULL
         }
@@ -2609,44 +2654,49 @@ extract_of_distributions <- function(summary_path, segment_labels) {
 
         display_choices <- gsub("_", " ", of_choices)
         named_choices <- stats::setNames(of_choices, display_choices)
-        category_choices <- manual_state$category_choices
-        category_named <- stats::setNames(category_choices, category_choices)
-        default_categories <- category_choices[seq_len(min(3, length(category_choices)))]
-        selected_categories <- input$manual_metric_category_select %||% default_categories
-        selected_categories <- intersect(category_choices, selected_categories)
 
         sections <- append(sections, list(
           tags$div(
             class = "manual-metric-section",
             tags$h4("Objective Function Metrics"),
-            fluidRow(
-              column(
-                width = 6,
-                shinyWidgets::pickerInput(
-                  "manual_of_metrics_selected",
-                  "Select objective function metrics",
-                  choices = named_choices,
-                  selected = selected_metrics,
-                  multiple = TRUE,
-                  options = list(`actions-box` = TRUE, `live-search` = TRUE)
-                )
-              ),
-              column(
-                width = 6,
-                shinyWidgets::pickerInput(
-                  "manual_metric_category_select",
-                  "Metric category summaries",
-                  choices = category_named,
-                  selected = selected_categories,
-                  multiple = TRUE,
-                  options = list(`actions-box` = TRUE, `live-search` = TRUE)
-                )
-              )
+            shinyWidgets::pickerInput(
+              "manual_of_metrics_selected",
+              "Select objective function metrics",
+              choices = named_choices,
+              selected = selected_metrics,
+              multiple = TRUE,
+              options = list(`actions-box` = TRUE, `live-search` = TRUE)
             ),
-            uiOutput("manual_of_histograms"),
-            DT::DTOutput("manual_metric_category_table")
+            uiOutput("manual_of_histograms")
           )
         ))
+
+        category_choices <- manual_state$category_choices
+        if (length(category_choices)) {
+          category_named <- stats::setNames(category_choices, category_choices)
+          default_categories <- category_choices[seq_len(min(3, length(category_choices)))]
+          selected_categories <- input$manual_metric_category_select %||% default_categories
+          selected_categories <- intersect(category_choices, selected_categories)
+          if (!length(selected_categories) && length(default_categories)) {
+            selected_categories <- default_categories
+          }
+
+          sections <- append(sections, list(
+            tags$div(
+              class = "manual-metric-section",
+              tags$h4("Metric Category Summary"),
+              shinyWidgets::pickerInput(
+                "manual_metric_category_select",
+                "Select metrics for category summary",
+                choices = category_named,
+                selected = selected_categories,
+                multiple = TRUE,
+                options = list(`actions-box` = TRUE, `live-search` = TRUE)
+              ),
+              DT::DTOutput("manual_metric_category_table")
+            )
+          ))
+        }
       }
     }
 
@@ -2737,17 +2787,21 @@ extract_of_distributions <- function(summary_path, segment_labels) {
     )
 
     colors <- segment_colors()
-    applicable <- intersect(segment_cols, names(colors))
+    cell_cols <- colors$cell %||% character(0)
+    header_cols <- colors$header %||% character(0)
+    applicable <- intersect(segment_cols, names(cell_cols))
     for (seg in applicable) {
+      cell_col <- cell_cols[[seg]]
       dt <- DT::formatStyle(
         dt,
         columns = seg,
-        backgroundColor = colors[[seg]],
-        color = segment_text_contrast(colors[[seg]])
+        backgroundColor = cell_col,
+        color = segment_text_contrast(cell_col)
       )
     }
 
-    col_defs <- build_segment_column_defs(names(display), applicable)
+    header_applicable <- intersect(segment_cols, names(header_cols))
+    col_defs <- build_segment_column_defs(names(display), header_applicable)
     if (length(col_defs)) {
       dt$x$options$columnDefs <- c(dt$x$options$columnDefs, col_defs)
     }
@@ -2783,17 +2837,21 @@ extract_of_distributions <- function(summary_path, segment_labels) {
     )
 
     colors <- segment_colors()
-    applicable <- intersect(segment_cols, names(colors))
+    cell_cols <- colors$cell %||% character(0)
+    header_cols <- colors$header %||% character(0)
+    applicable <- intersect(segment_cols, names(cell_cols))
     for (seg in applicable) {
+      cell_col <- cell_cols[[seg]]
       dt <- DT::formatStyle(
         dt,
         columns = seg,
-        backgroundColor = colors[[seg]],
-        color = segment_text_contrast(colors[[seg]])
+        backgroundColor = cell_col,
+        color = segment_text_contrast(cell_col)
       )
     }
 
-    col_defs <- build_segment_column_defs(names(display), applicable)
+    header_applicable <- intersect(segment_cols, names(header_cols))
+    col_defs <- build_segment_column_defs(names(display), header_applicable)
     if (length(col_defs)) {
       dt$x$options$columnDefs <- c(dt$x$options$columnDefs, col_defs)
     }
@@ -2830,7 +2888,16 @@ extract_of_distributions <- function(summary_path, segment_labels) {
     segment_cols <- setdiff(names(summary_tbl), c("Metric", "Category"))
     for (col in segment_cols) {
       numeric_vals <- suppressWarnings(as.numeric(summary_tbl[[col]]))
-      summary_tbl[[col]] <- ifelse(is.na(numeric_vals), "-", sprintf("%.2f", numeric_vals))
+      if (all(is.na(numeric_vals))) {
+        summary_tbl[[col]] <- "-"
+        next
+      }
+      scaled_vals <- numeric_vals
+      max_val <- suppressWarnings(max(numeric_vals, na.rm = TRUE))
+      if (is.finite(max_val) && max_val <= 1) {
+        scaled_vals <- numeric_vals * 100
+      }
+      summary_tbl[[col]] <- ifelse(is.na(scaled_vals), "-", sprintf("%.1f%%", scaled_vals))
     }
 
     dt <- DT::datatable(
@@ -2841,17 +2908,21 @@ extract_of_distributions <- function(summary_path, segment_labels) {
     )
 
     colors <- segment_colors()
-    applicable <- intersect(segment_cols, names(colors))
+    cell_cols <- colors$cell %||% character(0)
+    header_cols <- colors$header %||% character(0)
+    applicable <- intersect(segment_cols, names(cell_cols))
     for (seg in applicable) {
+      cell_col <- cell_cols[[seg]]
       dt <- DT::formatStyle(
         dt,
         columns = seg,
-        backgroundColor = colors[[seg]],
-        color = segment_text_contrast(colors[[seg]])
+        backgroundColor = cell_col,
+        color = segment_text_contrast(cell_col)
       )
     }
 
-    col_defs <- build_segment_column_defs(names(summary_tbl), applicable)
+    header_applicable <- intersect(segment_cols, names(header_cols))
+    col_defs <- build_segment_column_defs(names(summary_tbl), header_applicable)
     if (length(col_defs)) {
       dt$x$options$columnDefs <- c(dt$x$options$columnDefs, col_defs)
     }
@@ -2893,70 +2964,95 @@ extract_of_distributions <- function(summary_path, segment_labels) {
         return()
       }
 
-      colors <- segment_colors()
+      palette <- segment_colors()
+      header_cols <- palette$header %||% character(0)
+      cell_cols <- palette$cell %||% character(0)
 
       hist_ids <- character(0)
       plot_blocks <- lapply(seq_along(selected), function(idx) {
         metric_key <- selected[[idx]]
-        plot_id <- sanitize_manual_id(paste0("hist_", metric_key, "_", idx))
-        hist_ids <<- c(hist_ids, plot_id)
         dist_tbl <- distributions[[metric_key]]
+        metric_label <- gsub("_", " ", metric_key)
 
-        local({
-          metric_label <- gsub("_", " ", metric_key)
-          output[[plot_id]] <- plotly::renderPlotly({
-            if (is.null(dist_tbl) || !nrow(dist_tbl)) {
-              validate(need(FALSE, paste("No data available for", metric_label)))
-            }
+        if (is.null(dist_tbl) || !nrow(dist_tbl)) {
+          return(NULL)
+        }
 
-            segments <- unique(dist_tbl$Segment)
-            segments <- segments[!is.na(segments) & nzchar(segments)]
-            validate(need(length(segments) > 0, paste("No segment data for", metric_label)))
+        segments <- unique(dist_tbl$Segment)
+        segments <- segments[!is.na(segments) & nzchar(segments)]
+        if (!length(segments)) {
+          return(NULL)
+        }
 
-            plots <- purrr::map(segments, function(seg) {
-              seg_values <- dist_tbl %>%
-                dplyr::filter(Segment == seg) %>%
-                dplyr::pull(Value)
-              cleaned <- suppressWarnings(as.numeric(seg_values))
-              cleaned <- cleaned[!is.na(cleaned)]
-              validate(need(length(cleaned) > 0, paste("No data available for", seg)))
-              bins <- min(25, max(5, floor(sqrt(length(cleaned)))))
-              seg_color <- colors[[seg]] %||% "#2563EB"
+        mini_plots <- lapply(seq_along(segments), function(seg_idx) {
+          seg <- segments[[seg_idx]]
+          seg_values <- dist_tbl %>%
+            dplyr::filter(Segment == seg) %>%
+            dplyr::pull(Value)
+          cleaned <- suppressWarnings(as.numeric(seg_values))
+          cleaned <- cleaned[!is.na(cleaned)]
+          if (!length(cleaned)) {
+            return(NULL)
+          }
+
+          bins <- min(25, max(5, floor(sqrt(length(cleaned)))))
+          seg_header <- header_cols[[seg]] %||% "#2563EB"
+          seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.65)
+
+          raw_id <- paste0("hist_", metric_key, "_", idx, "_", seg)
+          plot_id <- sanitize_manual_id(raw_id)
+          if (plot_id %in% hist_ids) {
+            plot_id <- paste0(plot_id, "_", seg_idx)
+          }
+          hist_ids <<- c(hist_ids, plot_id)
+
+          local({
+            fill_col <- seg_fill
+            border_col <- seg_header
+            data_vals <- cleaned
+            nbins <- bins
+            output[[plot_id]] <- plotly::renderPlotly({
               plotly::plot_ly(
-                x = cleaned,
+                x = data_vals,
                 type = "histogram",
-                nbinsx = bins,
-                marker = list(color = seg_color, line = list(color = segment_text_contrast(seg_color), width = 0.6)),
-                opacity = 0.8,
+                nbinsx = nbins,
+                marker = list(
+                  color = fill_col,
+                  line = list(color = border_col, width = 0.8)
+                ),
+                opacity = 0.95,
                 showlegend = FALSE
               ) %>%
                 plotly::layout(
-                  title = list(text = seg),
-                  bargap = 0.04,
-                  margin = list(l = 30, r = 10, t = 40, b = 35),
-                  xaxis = list(title = ""),
-                  yaxis = list(title = "")
+                  bargap = 0.05,
+                  margin = list(l = 10, r = 4, t = 6, b = 26),
+                  xaxis = list(title = "", zeroline = FALSE, showgrid = FALSE),
+                  yaxis = list(title = "", zeroline = FALSE, showgrid = FALSE)
                 )
             })
-
-            subplot_args <- c(plots, nrows = 1, shareY = TRUE, titleX = TRUE, margin = 0.03)
-            do.call(plotly::subplot, subplot_args) %>%
-              plotly::layout(
-                showlegend = FALSE,
-                xaxis = list(title = ""),
-                yaxis = list(title = "Respondents")
-              )
           })
+
+          tags$div(
+            class = "of-mini-hist",
+            tags$div(class = "of-mini-title", seg),
+            plotly::plotlyOutput(plot_id, height = "120px")
+          )
         })
+
+        mini_plots <- purrr::compact(mini_plots)
+        if (!length(mini_plots)) {
+          return(NULL)
+        }
 
         tags$div(
           class = "of-metric-panel",
           tags$h5(class = "of-metric-title", metric_label),
-          plotly::plotlyOutput(plot_id, height = "220px")
+          tags$div(class = "of-hist-grid", mini_plots)
         )
       })
 
-      manual_state$rendered_hist_ids <- hist_ids
+      plot_blocks <- purrr::compact(plot_blocks)
+      manual_state$rendered_hist_ids <- unique(hist_ids)
       output$manual_of_histograms <- renderUI({
         if (!length(plot_blocks)) {
           div(class = "text-muted", "Select objective function metrics to view distributions.")
