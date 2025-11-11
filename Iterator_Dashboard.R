@@ -180,34 +180,60 @@ ui <- dashboardPage(
           box-shadow: 0 26px 60px rgba(15, 23, 42, 0.35);
         }
         .of-metric-panel {
-          background: rgba(226, 232, 240, 0.55);
+          background: #ffffff;
           border: 1px solid rgba(148, 163, 184, 0.28);
-          border-radius: 14px;
-          padding: 14px 18px;
-          margin-bottom: 20px;
+          border-radius: 16px;
+          padding: 18px 20px 20px 20px;
+          margin-bottom: 22px;
+          box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+        }
+        .of-metric-summary {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-bottom: 14px;
+        }
+        .of-stat-chip {
+          display: inline-flex;
+          align-items: center;
+          padding: 6px 12px;
+          border-radius: 999px;
+          background: rgba(37, 99, 235, 0.08);
+          color: #1e293b;
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: 0.2px;
         }
         .of-hist-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-          gap: 12px;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 14px;
         }
         .of-mini-hist {
-          background: rgba(248, 250, 252, 0.95);
-          border-radius: 12px;
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          padding: 12px 14px 10px 14px;
-          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+          background: #f8fafc;
+          border-radius: 14px;
+          border: 1px solid rgba(148, 163, 184, 0.2);
+          padding: 14px 16px 12px 16px;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
         }
         .of-mini-title {
           font-size: 13px;
           font-weight: 600;
-          margin-bottom: 6px;
+          margin-bottom: 8px;
           color: #0f172a;
         }
         .of-metric-title {
-          font-weight: 600;
-          margin-bottom: 10px;
+          font-weight: 700;
+          margin-bottom: 12px;
           color: #1e293b;
+          letter-spacing: 0.3px;
+        }
+        .of-table-wrapper {
+          margin-top: 18px;
+          padding: 16px 18px 10px 18px;
+          border-radius: 14px;
+          border: 1px solid rgba(148, 163, 184, 0.24);
+          background: rgba(248, 250, 252, 0.8);
         }
         .manual-metric-section {
           background: rgba(237, 242, 247, 0.6);
@@ -220,6 +246,16 @@ ui <- dashboardPage(
           font-weight: 600;
           color: #0f172a;
           margin-top: 0;
+        }
+        .of-picker-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 14px;
+          margin-bottom: 16px;
+        }
+        .of-picker-row .form-group {
+          flex: 1 1 260px;
+          margin-bottom: 0;
         }
         table.dataTable td.segment-column,
         table.dataTable th.segment-column {
@@ -592,7 +628,7 @@ server <- function(input, output, session) {
       return(list(header = character(0), cell = character(0)))
     }
 
-    cell_cols <- vapply(palette, lighten_color, character(1), amount = 0.78)
+    cell_cols <- vapply(palette, lighten_color, character(1), amount = 0.88)
     list(header = palette, cell = cell_cols)
   })
 
@@ -612,7 +648,7 @@ server <- function(input, output, session) {
     css_rules <- purrr::map_chr(names(header_cols), function(seg) {
       cls <- segment_css_class(seg)
       header_col <- header_cols[[seg]]
-      cell_col <- cell_cols[[seg]] %||% lighten_color(header_col, 0.68)
+      cell_col <- cell_cols[[seg]] %||% lighten_color(header_col, 0.82)
       header_text <- segment_text_contrast(header_col)
       cell_text <- segment_text_contrast(cell_col)
       sprintf(
@@ -2905,19 +2941,40 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         display_choices <- gsub("_", " ", of_choices)
         named_choices <- stats::setNames(of_choices, display_choices)
 
+        selected_table_metrics <- input$manual_of_table_metrics %||% selected_metrics
+        selected_table_metrics <- intersect(toupper(selected_table_metrics), of_choices)
+        if (!length(selected_table_metrics)) {
+          selected_table_metrics <- selected_metrics
+        }
+
         sections <- append(sections, list(
           tags$div(
             class = "manual-metric-section",
             tags$h4("Objective Function Metrics"),
-            shinyWidgets::pickerInput(
-              "manual_of_metrics_selected",
-              "Select objective function metrics",
-              choices = named_choices,
-              selected = selected_metrics,
-              multiple = TRUE,
-              options = list(`actions-box` = TRUE, `live-search` = TRUE)
+            div(
+              class = "of-picker-row",
+              shinyWidgets::pickerInput(
+                "manual_of_metrics_selected",
+                "Select objective function metrics",
+                choices = named_choices,
+                selected = selected_metrics,
+                multiple = TRUE,
+                options = list(`actions-box` = TRUE, `live-search` = TRUE)
+              ),
+              shinyWidgets::pickerInput(
+                "manual_of_table_metrics",
+                "Select metrics for summary tables",
+                choices = named_choices,
+                selected = selected_table_metrics,
+                multiple = TRUE,
+                options = list(`actions-box` = TRUE, `live-search` = TRUE)
+              )
             ),
-            uiOutput("manual_of_histograms")
+            uiOutput("manual_of_histograms"),
+            div(
+              class = "of-table-wrapper",
+              DT::DTOutput("manual_of_metric_table")
+            )
           )
         ))
 
@@ -3180,6 +3237,95 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
     dt
   })
 
+  output$manual_of_metric_table <- DT::renderDT({
+    req(manual_state$run_name)
+
+    data_tbl <- manual_state$of_metrics_table
+    if (is.null(data_tbl) || !nrow(data_tbl)) {
+      return(DT::datatable(
+        data.frame(Message = "Objective function summaries unavailable for this run."),
+        options = list(dom = "t"),
+        rownames = FALSE
+      ))
+    }
+
+    available <- manual_state$available_of_metrics
+    if (!length(available)) {
+      available <- normalize_of_metric_names(data_tbl$Metric)
+    }
+
+    selected <- input$manual_of_table_metrics
+    if (is.null(selected) || !length(selected)) {
+      selected <- input$manual_of_metrics_selected
+    }
+
+    selected <- toupper(selected %||% character(0))
+    selected <- intersect(selected, available)
+    if (!length(selected)) {
+      selected <- head(available, min(3, length(available)))
+    }
+
+    if (!length(selected)) {
+      return(DT::datatable(
+        data.frame(Message = "Select one or more metrics to view their summaries."),
+        options = list(dom = "t"),
+        rownames = FALSE
+      ))
+    }
+
+    display <- data_tbl
+    display$MetricKey <- normalize_of_metric_names(display$Metric)
+    order_idx <- match(selected, display$MetricKey)
+    order_idx <- order_idx[!is.na(order_idx)]
+    if (!length(order_idx)) {
+      return(DT::datatable(
+        data.frame(Message = "Selected metrics do not have summary tables."),
+        options = list(dom = "t"),
+        rownames = FALSE
+      ))
+    }
+
+    display <- display[order_idx, , drop = FALSE]
+    display$Metric <- tools::toTitleCase(tolower(gsub("_", " ", display$Metric)))
+    display$MetricKey <- NULL
+
+    segment_cols <- setdiff(names(display), "Metric")
+    for (col in segment_cols) {
+      numeric_vals <- suppressWarnings(as.numeric(display[[col]]))
+      formatted <- ifelse(is.na(numeric_vals), "-", sprintf("%.2f", numeric_vals))
+      display[[col]] <- formatted
+    }
+
+    dt <- DT::datatable(
+      display,
+      options = list(dom = "t", paging = FALSE, ordering = FALSE),
+      rownames = FALSE,
+      escape = FALSE
+    )
+
+    colors <- segment_colors()
+    cell_cols <- colors$cell %||% character(0)
+    header_cols <- colors$header %||% character(0)
+    applicable <- intersect(segment_cols, names(cell_cols))
+    for (seg in applicable) {
+      cell_col <- cell_cols[[seg]]
+      dt <- DT::formatStyle(
+        dt,
+        columns = seg,
+        backgroundColor = cell_col,
+        color = segment_text_contrast(cell_col)
+      )
+    }
+
+    header_applicable <- intersect(segment_cols, names(header_cols))
+    col_defs <- build_segment_column_defs(names(display), header_applicable)
+    if (length(col_defs)) {
+      dt$x$options$columnDefs <- c(dt$x$options$columnDefs, col_defs)
+    }
+
+    dt
+  })
+
   observeEvent(
     list(input$manual_of_metrics_selected, manual_state$of_distributions, manual_state$run_name),
     {
@@ -3244,6 +3390,11 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           return(NULL)
         }
 
+        stat_mean <- mean(metric_values)
+        stat_median <- stats::median(metric_values)
+        stat_sd <- if (length(metric_values) > 1) stats::sd(metric_values) else 0
+        stat_n <- length(metric_values)
+
         if (identical(range_min, range_max)) {
           padding <- if (range_min == 0) 0.5 else abs(range_min) * 0.05
           if (!is.finite(padding) || padding <= 0) {
@@ -3280,7 +3431,7 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           }
 
           seg_header <- header_cols[[seg]] %||% "#2563EB"
-          seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.82)
+          seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.9)
 
           raw_id <- paste0("hist_", metric_key, "_", idx, "_", seg)
           plot_id <- sanitize_manual_id(raw_id)
@@ -3308,14 +3459,16 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
                 ),
                 marker = list(
                   color = fill_col,
-                  line = list(color = border_col, width = 0.8)
+                  line = list(color = border_col, width = 1.1)
                 ),
                 opacity = 0.95,
                 showlegend = FALSE
               ) %>%
                 plotly::layout(
-                  bargap = 0.05,
+                  bargap = 0.08,
                   margin = list(l = 10, r = 4, t = 6, b = 26),
+                  paper_bgcolor = "rgba(0,0,0,0)",
+                  plot_bgcolor = "rgba(0,0,0,0)",
                   xaxis = list(
                     title = "",
                     zeroline = FALSE,
@@ -3339,9 +3492,18 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           return(NULL)
         }
 
+        summary_row <- tags$div(
+          class = "of-metric-summary",
+          tags$span(class = "of-stat-chip", sprintf("Observations: %d", stat_n)),
+          tags$span(class = "of-stat-chip", sprintf("Mean: %.2f", stat_mean)),
+          tags$span(class = "of-stat-chip", sprintf("Median: %.2f", stat_median)),
+          tags$span(class = "of-stat-chip", sprintf("Std Dev: %.2f", stat_sd))
+        )
+
         tags$div(
           class = "of-metric-panel",
           tags$h5(class = "of-metric-title", metric_label),
+          summary_row,
           tags$div(class = "of-hist-grid", mini_plots)
         )
       })
