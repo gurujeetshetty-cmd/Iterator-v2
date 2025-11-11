@@ -50,6 +50,32 @@ normalize_if_exists <- function(path) {
   x
 }
 
+safe_named_get <- function(x, key) {
+  if (is.null(x) || !length(x)) {
+    return(NULL)
+  }
+
+  if (is.null(key) || !length(key)) {
+    return(NULL)
+  }
+
+  key <- key[1]
+
+  if (is.character(key)) {
+    nm <- names(x)
+    if (!is.null(nm) && key %in% nm) {
+      return(x[[key]])
+    }
+  }
+
+  idx <- suppressWarnings(as.integer(key))
+  if (!is.na(idx) && idx >= 1 && idx <= length(x)) {
+    return(x[[idx]])
+  }
+
+  NULL
+}
+
 required_scripts <- c(
   "Iteration_Prioritizer_vF3.R",
   "metrics_fa.R",
@@ -3717,8 +3743,8 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
             return(NULL)
           }
 
-          seg_header <- header_cols[[seg]] %||% "#2563EB"
-          seg_fill <- cell_cols[[seg]] %||% lighten_color(seg_header, 0.9)
+          seg_header <- safe_named_get(header_cols, seg) %||% "#2563EB"
+          seg_fill <- safe_named_get(cell_cols, seg) %||% lighten_color(seg_header, 0.9)
 
           raw_id <- paste0("hist_", metric_key, "_", idx, "_", seg)
           plot_id <- sanitize_manual_id(raw_id)
