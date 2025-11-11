@@ -209,6 +209,16 @@ ui <- dashboardPage(
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
           gap: 14px;
         }
+        .of-hist-warning {
+          background: rgba(249, 115, 22, 0.12);
+          border: 1px solid rgba(194, 65, 12, 0.2);
+          color: #b45309;
+          padding: 10px 12px;
+          border-radius: 10px;
+          font-size: 12px;
+          font-weight: 600;
+          margin-bottom: 12px;
+        }
         .of-mini-hist {
           background: #f8fafc;
           border-radius: 14px;
@@ -793,10 +803,15 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
     return(list())
   }
 
-  candidate_sheets <- unique(c(
-    sheets[seq_len(min(5, length(sheets)))],
-    sheets[grep("seg|sum|var", tolower(sheets))]
-  ))
+  target_sheet <- "F2_SEG_xTABS"
+  candidate_sheets <- if (target_sheet %in% sheets) {
+    target_sheet
+  } else {
+    unique(c(
+      sheets[seq_len(min(5, length(sheets)))],
+      sheets[grep("seg|sum|var", tolower(sheets))]
+    ))
+  }
 
   read_sheet <- function(sheet) {
     tryCatch(
@@ -1345,6 +1360,179 @@ prepare_of_distribution_data <- function(distributions) {
   }
 
   cleaned
+}
+
+extract_input_of_distributions <- function(input_path, segment_labels) {
+  if (!file.exists(input_path) || !length(segment_labels)) {
+    return(list())
+  }
+
+  raw <- tryCatch(
+    readxl::read_excel(
+      input_path,
+      sheet = "INPUT",
+      na = c("NA", ".", "", " ")
+    ),
+    error = function(...) NULL
+  )
+
+  if (is.null(raw) || !nrow(raw)) {
+    return(list())
+  }
+
+  names(raw) <- make.unique(as.character(names(raw)))
+
+  if (nrow(raw) >= 2) {
+    raw <- raw[-c(1:2), , drop = FALSE]
+  }
+
+  if (!nrow(raw)) {
+    return(list())
+  }
+
+  seg_col_idx <- which(tolower(names(raw)) %in% c("segm_polca", "segment", "segment_id", "segmentid", "polca_seg"))
+  if (!length(seg_col_idx)) {
+    seg_col_idx <- grep("seg", tolower(names(raw)))
+  }
+  if (!length(seg_col_idx)) {
+    return(list())
+  }
+
+  seg_values <- as.character(raw[[seg_col_idx[1]]])
+  seg_numeric <- suppressWarnings(as.integer(seg_values))
+  seg_lookup <- stats::setNames(segment_labels, as.character(seq_along(segment_labels)))
+  seg_labels <- seg_lookup[as.character(seg_numeric)]
+  seg_labels[is.na(seg_labels) | !nzchar(seg_labels)] <- seg_values[is.na(seg_labels) | !nzchar(seg_labels)]
+  seg_labels <- ifelse(is.na(seg_labels) | !nzchar(seg_labels), paste0("Segment ", seg_numeric), seg_labels)
+
+  of_cols <- grep("^OF_", names(raw), ignore.case = TRUE, value = TRUE)
+  if (!length(of_cols)) {
+    return(list())
+  }
+
+  distributions <- purrr::map(of_cols, function(col) {
+    tibble::tibble(
+      Segment = seg_labels,
+      Value = suppressWarnings(as.numeric(gsub("[,%]", "", raw[[col]])))
+    ) %>%
+      dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value))
+  })
+
+  names(distributions) <- toupper(of_cols)
+  distributions <- purrr::compact(distributions)
+
+  purrr::imap(distributions, function(tbl, nm) {
+    tbl %>%
+      dplyr::mutate(
+        Segment = as.character(Segment),
+        Value = as.numeric(Value)
+      ) %>%
+      dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value)) %>%
+      dplyr::distinct()
+  })
+}
+
+build_fallback_of_distributions <- function(of_long) {
+  if (is.null(of_long) || !nrow(of_long)) {
+    return(list())
+  }
+
+  fallback_tbl <- of_long %>%
+    dplyr::mutate(
+      Metric = toupper(as.character(Metric)),
+      Segment = as.character(Segment),
+      Value = suppressWarnings(as.numeric(Value))
+    ) %>%
+    dplyr::filter(grepl("^OF_", Metric) & !is.na(Value) & nzchar(Segment))
+
+  if (!nrow(fallback_tbl)) {
+    return(list())
+  }
+
+  split(fallback_tbl %>% dplyr::select(Segment, Value), fallback_tbl$Metric)
+}
+
+merge_of_distributions <- function(primary, fallback) {
+  primary <- primary %||% list()
+  fallback <- fallback %||% list()
+
+  primary <- purrr::compact(primary)
+  fallback <- purrr::compact(fallback)
+
+  if (!length(primary)) {
+    return(fallback)
+  }
+  if (!length(fallback)) {
+    return(primary)
+  }
+
+  names(primary) <- toupper(names(primary))
+  names(fallback) <- toupper(names(fallback))
+
+  missing <- setdiff(names(fallback), names(primary))
+  if (length(missing)) {
+    primary[missing] <- fallback[missing]
+  }
+
+  primary
+}
+
+compute_available_of_metrics <- function(base_metrics = character(0), of_long = NULL, distributions = NULL) {
+  dist_names <- normalize_of_metric_names(names(distributions))
+  long_names <- if (!is.null(of_long) && nrow(of_long)) normalize_of_metric_names(of_long$Metric) else character(0)
+  base_names <- normalize_of_metric_names(base_metrics)
+
+  unique_vals <- unique(c(base_names, dist_names, long_names))
+  unique_vals[order(unique_vals)]
+}
+
+resolve_manual_of_distributions <- function(state) {
+  segment_labels <- NULL
+  if (!is.null(state$segment_summary) && nrow(state$segment_summary)) {
+    segment_labels <- as.character(state$segment_summary$Segment)
+  }
+  if (is.null(segment_labels) || !length(segment_labels)) {
+    if (!is.null(state$metrics_table) && nrow(state$metrics_table)) {
+      segment_labels <- setdiff(names(state$metrics_table), "Metric")
+    }
+  }
+
+  raw_distributions <- list()
+  if (!is.null(state$input_path) && nzchar(state$input_path) && length(segment_labels)) {
+    raw_distributions <- extract_input_of_distributions(state$input_path, segment_labels)
+    raw_distributions <- prepare_of_distribution_data(raw_distributions)
+    raw_distributions <- filter_of_metric_distributions(raw_distributions)
+  }
+
+  primary <- state$of_distributions %||% list()
+  if (length(raw_distributions)) {
+    primary <- merge_of_distributions(raw_distributions, primary)
+  }
+  fallback <- build_fallback_of_distributions(state$of_metrics_long)
+  fallback <- prepare_of_distribution_data(fallback)
+  fallback <- filter_of_metric_distributions(fallback)
+
+  if (!length(primary)) {
+    return(fallback)
+  }
+
+  primary <- purrr::compact(primary)
+  names(primary) <- toupper(names(primary))
+
+  if (length(fallback)) {
+    names(fallback) <- toupper(names(fallback))
+    missing <- setdiff(names(fallback), names(primary))
+    if (length(missing)) {
+      primary[missing] <- fallback[missing]
+    }
+  }
+
+  primary
+}
+
+format_metric_label <- function(metric_key) {
+  clean <- gsub("_", " ", toupper(metric_key))
+  tools::toTitleCase(tolower(clean))
 }
 
 write_manual_summary_workbook <- function(summary_path, metrics_table, var_tables, category_summary) {
@@ -2681,23 +2869,18 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
 
         metric_keys <- if (nrow(of_long)) normalize_of_metric_names(of_long$Metric) else character(0)
 
-        distributions <- extract_of_distributions(summary_path, segment_labels)
-        if (!length(distributions) && nrow(of_long)) {
-          distributions <- split(
-            of_long %>% dplyr::select(Metric, Segment, Value),
-            of_long$Metric
-          )
-        }
+        raw_distributions <- extract_input_of_distributions(manual_state$input_path, segment_labels)
+        extracted_distributions <- extract_of_distributions(summary_path, segment_labels)
+        fallback_distributions <- build_fallback_of_distributions(of_long)
 
-        normalized_distributions <- prepare_of_distribution_data(distributions)
+        merged_distributions <- merge_of_distributions(raw_distributions, extracted_distributions)
+        merged_distributions <- merge_of_distributions(merged_distributions, fallback_distributions)
+
+        normalized_distributions <- prepare_of_distribution_data(merged_distributions)
         normalized_distributions <- filter_of_metric_distributions(normalized_distributions)
-        if (length(normalized_distributions)) {
-          manual_state$of_distributions <- normalized_distributions
-          manual_state$available_of_metrics <- normalize_of_metric_names(c(metric_keys, names(normalized_distributions)))
-        } else {
-          manual_state$of_distributions <- list()
-          manual_state$available_of_metrics <- metric_keys
-        }
+
+        manual_state$of_distributions <- normalized_distributions
+        manual_state$available_of_metrics <- compute_available_of_metrics(metric_keys, of_long, normalized_distributions)
 
         incProgress(0.75, detail = "Extracting variable summaries")
         var_tables <- extract_manual_variable_tables(summary_path, selection$variable)
@@ -2900,6 +3083,44 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
       showNotification(paste("❌ Manual iteration failed:", e$message), type = "error", duration = 10)
     })
   })
+
+  observeEvent(
+    list(manual_state$available_of_metrics, manual_state$run_name),
+    {
+      available <- manual_state$available_of_metrics %||% character(0)
+      display_labels <- gsub("_", " ", available)
+      named_choices <- stats::setNames(available, display_labels)
+      if (!length(available)) {
+        named_choices <- stats::setNames(character(0), character(0))
+      }
+
+      selected_hist <- isolate(input$manual_of_metrics_selected %||% character(0))
+      selected_hist <- intersect(toupper(selected_hist), available)
+      if (!length(selected_hist)) {
+        selected_hist <- available
+      }
+
+      selected_table <- isolate(input$manual_of_table_metrics %||% character(0))
+      selected_table <- intersect(toupper(selected_table), available)
+      if (!length(selected_table)) {
+        selected_table <- selected_hist
+      }
+
+      shinyWidgets::updatePickerInput(
+        session,
+        "manual_of_metrics_selected",
+        choices = named_choices,
+        selected = selected_hist
+      )
+      shinyWidgets::updatePickerInput(
+        session,
+        "manual_of_table_metrics",
+        choices = named_choices,
+        selected = selected_table
+      )
+    },
+    ignoreNULL = FALSE
+  )
 
   output$manual_results_ui <- renderUI({
     if (is.null(manual_state$run_name)) {
@@ -3327,27 +3548,37 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
   })
 
   observeEvent(
-    list(input$manual_of_metrics_selected, manual_state$of_distributions, manual_state$run_name),
+    list(
+      input$manual_of_metrics_selected,
+      manual_state$of_distributions,
+      manual_state$of_metrics_long,
+      manual_state$segment_summary,
+      manual_state$run_name
+    ),
     {
-      distributions <- manual_state$of_distributions
-
       if (length(manual_state$rendered_hist_ids)) {
         for (id in manual_state$rendered_hist_ids) {
           output[[id]] <- NULL
         }
       }
 
-      if (is.null(distributions) || !length(distributions)) {
+      distributions <- resolve_manual_of_distributions(manual_state)
+      available <- compute_available_of_metrics(
+        manual_state$available_of_metrics,
+        manual_state$of_metrics_long,
+        distributions
+      )
+
+      if (!identical(available, manual_state$available_of_metrics)) {
+        manual_state$available_of_metrics <- available
+      }
+
+      if (!length(distributions) || !length(available)) {
         manual_state$rendered_hist_ids <- character(0)
         output$manual_of_histograms <- renderUI({
           div(class = "text-muted", "Objective function distributions unavailable for this run.")
         })
         return()
-      }
-
-      available <- manual_state$available_of_metrics
-      if (!length(available)) {
-        available <- normalize_of_metric_names(names(distributions))
       }
 
       selected <- input$manual_of_metrics_selected %||% available
@@ -3356,10 +3587,13 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         selected <- available
       }
 
-      if (!length(selected)) {
+      missing_metrics <- setdiff(selected, names(distributions))
+      valid_metrics <- intersect(selected, names(distributions))
+
+      if (!length(valid_metrics)) {
         manual_state$rendered_hist_ids <- character(0)
         output$manual_of_histograms <- renderUI({
-          div(class = "text-muted", "Select objective function metrics to view distributions.")
+          div(class = "text-muted", "Selected objective function metrics do not have distribution data.")
         })
         return()
       }
@@ -3368,20 +3602,50 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
       header_cols <- palette$header %||% character(0)
       cell_cols <- palette$cell %||% character(0)
 
-      hist_ids <- character(0)
-      plot_blocks <- lapply(seq_along(selected), function(idx) {
-        metric_key <- selected[[idx]]
-        dist_tbl <- distributions[[metric_key]]
-        metric_label <- gsub("_", " ", metric_key)
+      segment_order <- manual_state$segment_summary$Segment
+      if (is.null(segment_order) || !length(segment_order)) {
+        segment_order <- setdiff(names(manual_state$metrics_table), "Metric")
+      }
+      segment_order <- as.character(segment_order)
 
-        if (is.null(dist_tbl) || !nrow(dist_tbl)) {
+      hist_ids <- character(0)
+      plot_blocks <- lapply(seq_along(valid_metrics), function(idx) {
+        metric_key <- valid_metrics[[idx]]
+        dist_tbl <- distributions[[metric_key]]
+
+        if (is.null(dist_tbl)) {
           return(NULL)
         }
 
-        metric_values <- suppressWarnings(as.numeric(dist_tbl$Value))
+        dist_tbl <- tibble::as_tibble(dist_tbl) %>%
+          dplyr::mutate(
+            Segment = as.character(Segment),
+            Value = suppressWarnings(as.numeric(Value))
+          ) %>%
+          dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value))
+
+        if (!nrow(dist_tbl)) {
+          return(NULL)
+        }
+
+        metric_values <- dist_tbl$Value
         metric_values <- metric_values[is.finite(metric_values)]
         if (!length(metric_values)) {
           return(NULL)
+        }
+
+        stat_n <- length(metric_values)
+        stat_mean <- mean(metric_values)
+        stat_median <- stats::median(metric_values)
+        stat_sd <- if (stat_n > 1) stats::sd(metric_values) else 0
+        if (!is.finite(stat_sd)) {
+          stat_sd <- 0
+        }
+        if (!is.finite(stat_mean)) {
+          stat_mean <- 0
+        }
+        if (!is.finite(stat_median)) {
+          stat_median <- 0
         }
 
         range_min <- min(metric_values)
@@ -3389,11 +3653,6 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         if (!is.finite(range_min) || !is.finite(range_max)) {
           return(NULL)
         }
-
-        stat_mean <- mean(metric_values)
-        stat_median <- stats::median(metric_values)
-        stat_sd <- if (length(metric_values) > 1) stats::sd(metric_values) else 0
-        stat_n <- length(metric_values)
 
         if (identical(range_min, range_max)) {
           padding <- if (range_min == 0) 0.5 else abs(range_min) * 0.05
@@ -3404,17 +3663,46 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           range_max <- range_max + padding
         }
 
-        bucket_count <- 20L
-        bin_edges <- seq(range_min, range_max, length.out = bucket_count + 1)
-        bin_size <- diff(bin_edges)[1]
+        span <- range_max - range_min
+        if (!is.finite(span) || span <= 0) {
+          padding_base <- max(abs(range_min), abs(range_max), 1)
+          span <- padding_base * 0.1
+          if (!is.finite(span) || span <= 0) {
+            span <- 1
+          }
+          range_min <- range_min - span
+          range_max <- range_max + span
+          span <- range_max - range_min
+        }
+
+        if (stat_n <= 1) {
+          bucket_count <- 1L
+        } else {
+          bucket_count <- ceiling(log2(stat_n)) + 1L
+          bucket_count <- max(5L, min(40L, bucket_count))
+        }
+        bucket_count <- max(1L, bucket_count)
+
+        bin_size <- (range_max - range_min) / bucket_count
         if (!is.finite(bin_size) || bin_size <= 0) {
           bin_size <- 1
         }
-        bin_start <- bin_edges[1]
-        bin_end <- bin_edges[length(bin_edges)]
+        bin_start <- range_min
+        bin_end <- range_max
 
-        segments <- unique(dist_tbl$Segment)
-        segments <- segments[!is.na(segments) & nzchar(segments)]
+        segments_available <- unique(dist_tbl$Segment)
+        segments_available <- segments_available[!is.na(segments_available) & nzchar(segments_available)]
+        if (!length(segments_available)) {
+          return(NULL)
+        }
+
+        if (length(segment_order)) {
+          segments <- segment_order[segment_order %in% segments_available]
+          segments <- c(segments, setdiff(segments_available, segments))
+        } else {
+          segments <- segments_available
+        }
+
         if (!length(segments)) {
           return(NULL)
         }
@@ -3424,8 +3712,7 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           seg_values <- dist_tbl %>%
             dplyr::filter(Segment == seg) %>%
             dplyr::pull(Value)
-          cleaned <- suppressWarnings(as.numeric(seg_values))
-          cleaned <- cleaned[!is.na(cleaned)]
+          cleaned <- seg_values[is.finite(seg_values)]
           if (!length(cleaned)) {
             return(NULL)
           }
@@ -3462,6 +3749,7 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
                   line = list(color = border_col, width = 1.1)
                 ),
                 opacity = 0.95,
+                hoverinfo = "x+y",
                 showlegend = FALSE
               ) %>%
                 plotly::layout(
@@ -3502,13 +3790,23 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
 
         tags$div(
           class = "of-metric-panel",
-          tags$h5(class = "of-metric-title", metric_label),
+          tags$h5(class = "of-metric-title", format_metric_label(metric_key)),
           summary_row,
           tags$div(class = "of-hist-grid", mini_plots)
         )
       })
 
       plot_blocks <- purrr::compact(plot_blocks)
+
+      if (length(missing_metrics)) {
+        warning_labels <- vapply(missing_metrics, format_metric_label, character(1))
+        warning_block <- tags$div(
+          class = "of-hist-warning",
+          sprintf("No distribution data found for: %s.", paste(warning_labels, collapse = ", "))
+        )
+        plot_blocks <- c(list(warning_block), plot_blocks)
+      }
+
       manual_state$rendered_hist_ids <- unique(hist_ids)
       output$manual_of_histograms <- renderUI({
         if (!length(plot_blocks)) {
