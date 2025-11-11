@@ -803,10 +803,15 @@ extract_manual_variable_tables <- function(summary_path, selected_vars) {
     return(list())
   }
 
-  candidate_sheets <- unique(c(
-    sheets[seq_len(min(5, length(sheets)))],
-    sheets[grep("seg|sum|var", tolower(sheets))]
-  ))
+  target_sheet <- "F2_SEG_xTABS"
+  candidate_sheets <- if (target_sheet %in% sheets) {
+    target_sheet
+  } else {
+    unique(c(
+      sheets[seq_len(min(5, length(sheets)))],
+      sheets[grep("seg|sum|var", tolower(sheets))]
+    ))
+  }
 
   read_sheet <- function(sheet) {
     tryCatch(
@@ -1357,6 +1362,76 @@ prepare_of_distribution_data <- function(distributions) {
   cleaned
 }
 
+extract_input_of_distributions <- function(input_path, segment_labels) {
+  if (!file.exists(input_path) || !length(segment_labels)) {
+    return(list())
+  }
+
+  raw <- tryCatch(
+    readxl::read_excel(
+      input_path,
+      sheet = "INPUT",
+      na = c("NA", ".", "", " ")
+    ),
+    error = function(...) NULL
+  )
+
+  if (is.null(raw) || !nrow(raw)) {
+    return(list())
+  }
+
+  names(raw) <- make.unique(as.character(names(raw)))
+
+  if (nrow(raw) >= 2) {
+    raw <- raw[-c(1:2), , drop = FALSE]
+  }
+
+  if (!nrow(raw)) {
+    return(list())
+  }
+
+  seg_col_idx <- which(tolower(names(raw)) %in% c("segm_polca", "segment", "segment_id", "segmentid", "polca_seg"))
+  if (!length(seg_col_idx)) {
+    seg_col_idx <- grep("seg", tolower(names(raw)))
+  }
+  if (!length(seg_col_idx)) {
+    return(list())
+  }
+
+  seg_values <- as.character(raw[[seg_col_idx[1]]])
+  seg_numeric <- suppressWarnings(as.integer(seg_values))
+  seg_lookup <- stats::setNames(segment_labels, as.character(seq_along(segment_labels)))
+  seg_labels <- seg_lookup[as.character(seg_numeric)]
+  seg_labels[is.na(seg_labels) | !nzchar(seg_labels)] <- seg_values[is.na(seg_labels) | !nzchar(seg_labels)]
+  seg_labels <- ifelse(is.na(seg_labels) | !nzchar(seg_labels), paste0("Segment ", seg_numeric), seg_labels)
+
+  of_cols <- grep("^OF_", names(raw), ignore.case = TRUE, value = TRUE)
+  if (!length(of_cols)) {
+    return(list())
+  }
+
+  distributions <- purrr::map(of_cols, function(col) {
+    tibble::tibble(
+      Segment = seg_labels,
+      Value = suppressWarnings(as.numeric(gsub("[,%]", "", raw[[col]])))
+    ) %>%
+      dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value))
+  })
+
+  names(distributions) <- toupper(of_cols)
+  distributions <- purrr::compact(distributions)
+
+  purrr::imap(distributions, function(tbl, nm) {
+    tbl %>%
+      dplyr::mutate(
+        Segment = as.character(Segment),
+        Value = as.numeric(Value)
+      ) %>%
+      dplyr::filter(!is.na(Segment) & nzchar(Segment) & !is.na(Value)) %>%
+      dplyr::distinct()
+  })
+}
+
 build_fallback_of_distributions <- function(of_long) {
   if (is.null(of_long) || !nrow(of_long)) {
     return(list())
@@ -1412,7 +1487,27 @@ compute_available_of_metrics <- function(base_metrics = character(0), of_long = 
 }
 
 resolve_manual_of_distributions <- function(state) {
+  segment_labels <- NULL
+  if (!is.null(state$segment_summary) && nrow(state$segment_summary)) {
+    segment_labels <- as.character(state$segment_summary$Segment)
+  }
+  if (is.null(segment_labels) || !length(segment_labels)) {
+    if (!is.null(state$metrics_table) && nrow(state$metrics_table)) {
+      segment_labels <- setdiff(names(state$metrics_table), "Metric")
+    }
+  }
+
+  raw_distributions <- list()
+  if (!is.null(state$input_path) && nzchar(state$input_path) && length(segment_labels)) {
+    raw_distributions <- extract_input_of_distributions(state$input_path, segment_labels)
+    raw_distributions <- prepare_of_distribution_data(raw_distributions)
+    raw_distributions <- filter_of_metric_distributions(raw_distributions)
+  }
+
   primary <- state$of_distributions %||% list()
+  if (length(raw_distributions)) {
+    primary <- merge_of_distributions(raw_distributions, primary)
+  }
   fallback <- build_fallback_of_distributions(state$of_metrics_long)
   fallback <- prepare_of_distribution_data(fallback)
   fallback <- filter_of_metric_distributions(fallback)
@@ -2774,9 +2869,12 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
 
         metric_keys <- if (nrow(of_long)) normalize_of_metric_names(of_long$Metric) else character(0)
 
+        raw_distributions <- extract_input_of_distributions(manual_state$input_path, segment_labels)
         extracted_distributions <- extract_of_distributions(summary_path, segment_labels)
         fallback_distributions <- build_fallback_of_distributions(of_long)
-        merged_distributions <- merge_of_distributions(extracted_distributions, fallback_distributions)
+
+        merged_distributions <- merge_of_distributions(raw_distributions, extracted_distributions)
+        merged_distributions <- merge_of_distributions(merged_distributions, fallback_distributions)
 
         normalized_distributions <- prepare_of_distribution_data(merged_distributions)
         normalized_distributions <- filter_of_metric_distributions(normalized_distributions)
