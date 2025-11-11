@@ -7,37 +7,94 @@ library(tidyr)
 
 
 Iteration_running_function <- function(data_path, variables, tracker_path, output_file,seg_n,op_dic,solo) {
-  
+
 
   print(paste0("SOLO VALUE -2: ",solo))
-  variables_chosen<-as.numeric(unlist(strsplit(variables, ",")))
+
+  resolve_variables <- function(selection, available_names) {
+    if (is.null(selection)) {
+      selection <- ""
+    }
+
+    tokens <- unlist(strsplit(selection, ","), use.names = FALSE)
+    tokens <- trimws(tokens)
+    tokens <- tokens[nzchar(tokens)]
+
+    if (!length(tokens)) {
+      stop("No variables were provided for the iteration run.")
+    }
+
+    resolved_indices <- integer(0)
+    resolved_names <- character(0)
+    invalid_tokens <- character(0)
+
+    for (token in tokens) {
+      numeric_candidate <- suppressWarnings(as.integer(token))
+      if (!is.na(numeric_candidate) && numeric_candidate >= 1 && numeric_candidate <= length(available_names)) {
+        resolved_indices <- c(resolved_indices, numeric_candidate)
+        resolved_names <- c(resolved_names, available_names[numeric_candidate])
+        next
+      }
+
+      matched <- match(token, available_names)
+      if (!is.na(matched)) {
+        resolved_indices <- c(resolved_indices, matched)
+        resolved_names <- c(resolved_names, available_names[matched])
+      } else {
+        invalid_tokens <- c(invalid_tokens, token)
+      }
+    }
+
+    if (!length(resolved_indices)) {
+      stop("Unable to resolve any of the supplied variables to columns in the INPUT sheet.")
+    }
+
+    if (length(invalid_tokens)) {
+      stop(sprintf(
+        "The following variables could not be matched to the INPUT sheet: %s",
+        paste(invalid_tokens, collapse = ", ")
+      ))
+    }
+
+    list(indices = resolved_indices, names = resolved_names)
+  }
+
   themes_sheet <- "THEMES"
   input_sheet <- "INPUT"
   scores_sheet <- "VARIABLES"
   na_values <- c("NA", ".", "", " ")
   XTab_Data <- read_excel(data_path, sheet = input_sheet, na = na_values)
+
+  variable_resolution <- resolve_variables(variables, colnames(XTab_Data))
+  variables_chosen <- variable_resolution$indices
+
   variable_scores_data <- read_excel(data_path, sheet = scores_sheet, range = "B2:C999")
   variable_scores <- variable_scores_data
   colnames(variable_scores) <- c("Variable", "Score")
   variable_scores <- variable_scores[complete.cases(variable_scores), ]
-  variables_chosen_name<-colnames(XTab_Data[,variables_chosen])
-  variables_chosen_name<-as.data.frame(variables_chosen_name)
-  colnames(variables_chosen_name)<-"Variable"
+  variables_chosen_name<-data.frame(Variable = variable_resolution$names, stringsAsFactors = FALSE)
   variables_chosen_name <- variables_chosen_name %>% left_join(variable_scores, by = "Variable")
-   
-        
-        
+
+
+
    tracker<-read.csv(tracker_path)
 
-   colnames(tracker)
-    -
-    if(max(tracker$Iteration)==-Inf){itr_n=1} else{itr_n<-max(tracker$Iteration)+1}
+   if (!"Iteration" %in% colnames(tracker)) {
+     tracker$Iteration <- suppressWarnings(as.integer(seq_len(nrow(tracker))))
+   }
+
+   tracker$Iteration <- suppressWarnings(as.integer(tracker$Iteration))
+   if (!nrow(tracker) || all(is.na(tracker$Iteration))) {
+     itr_n <- 1L
+   } else {
+     itr_n <- max(tracker$Iteration, na.rm = TRUE) + 1L
+   }
 
     n_size<-nrow(variables_chosen_name)
     combination_data<-paste(variables_chosen_name$Variable, collapse = ";")
     total_score <- sum(variables_chosen_name$Score, na.rm = TRUE)
-   avg_score <- total_score / nrow(variables_chosen_name)
-   Var_cols<- variables
+   avg_score <- if (n_size > 0) total_score / n_size else NA_real_
+   Var_cols<- paste(variable_resolution$indices, collapse = ",")
 
    sort_of_columns <- function(cols) {
      if (!length(cols)) return(cols)
