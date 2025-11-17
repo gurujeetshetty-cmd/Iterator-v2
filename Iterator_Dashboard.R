@@ -83,7 +83,8 @@ required_scripts <- c(
   "Function_poLCA.R",
   "rules_check.R",
   "Iteration_loop.R",
-  "Iteration_Runner.R"
+  "Iteration_Runner.R",
+  "summary_generator_helper.R"
 )
 
 script_dir <- get_script_path()
@@ -167,7 +168,8 @@ ui <- dashboardPage(
     sidebarMenu(
       menuItem("Input Generator", tabName = "input_generator", icon = icon("cogs"), selected = TRUE),
       menuItem("Output Generator", tabName = "output_generator", icon = icon("chart-line")),
-      menuItem("Iteration Runner", tabName = "iteration_runner", icon = icon("play"))
+      menuItem("Iteration Runner", tabName = "iteration_runner", icon = icon("play")),
+      menuItem("Summary Generator", tabName = "summary_generator", icon = icon("align-left"))
     )
   ),
   dashboardBody(
@@ -512,7 +514,48 @@ ui <- dashboardPage(
       ),
 
       # ------------------------------------------------------
-      # TAB 3: ITERATION RUNNER
+      # TAB 3: SUMMARY GENERATOR
+      # ------------------------------------------------------
+      tabItem(tabName = "summary_generator",
+        fluidRow(
+          box(title = "SUMMARY_GENERATOR", status = "primary", solidHeader = TRUE, width = 12,
+            div(class = "box-intro",
+                h4("Convert the SUMMARY_GENERATOR sheet into narratives"),
+                p(class = "text-muted", style = "margin-bottom:0;",
+                  "Paste your output destination, choose a file name, and generate the weighted segment stories automatically.")),
+            div(class = "input-strip",
+                div(class = "input-block upload-block",
+                    fileInput("summary_workbook", "Upload workbook (SUMMARY_GENERATOR tab)", accept = ".xlsx")),
+                div(class = "input-block",
+                    textInput("summary_output_dir", "Output directory", value = getwd())),
+                div(class = "input-block",
+                    textInput("summary_output_name", "Output file name", value = "summary_output.txt"))
+            ),
+            div(class = "action-area",
+                actionButton("run_summary_generator", "Generate narratives", class = "btn btn-primary btn-lg"),
+                tags$small(class = "text-muted",
+                           icon("list"),
+                           span(" Weights, segment sizes, and cross-segment logic are applied automatically.", style = "margin-left:6px;"))),
+            div(class = "output-status-callout",
+                strong("Summary status"),
+                textOutput("summary_status_text", container = function(...) tags$span(style = "display:block;font-weight:600;font-size:15px;", ...)))
+          )
+        ),
+        fluidRow(
+          column(width = 6,
+            box(title = "Segment sizes", status = "primary", solidHeader = TRUE, width = 12,
+                tableOutput("summary_segment_sizes"))
+          ),
+          column(width = 6,
+            box(title = "Narrative preview", status = "primary", solidHeader = TRUE, width = 12,
+                tags$small(class = "text-muted", "Text file format preview"),
+                verbatimTextOutput("summary_preview", placeholder = TRUE))
+          )
+        )
+      ),
+
+      # ------------------------------------------------------
+      # TAB 4: ITERATION RUNNER
       # ------------------------------------------------------
       tabItem(tabName = "iteration_runner",
         fluidRow(
@@ -653,6 +696,13 @@ server <- function(input, output, session) {
     updating_vars = FALSE
   )
 
+  summary_state <- reactiveValues(
+    status = "Upload the SUMMARY_GENERATOR workbook to begin.",
+    segment_sizes = NULL,
+    preview = character(0),
+    output_path = NULL
+  )
+
   segment_colors <- reactive({
     segs <- manual_state$segment_summary$Segment
     if (is.null(segs) || !length(segs)) {
@@ -671,6 +721,47 @@ server <- function(input, output, session) {
   status_text <- reactiveVal("Output generator idle.")
 
   output$status_run <- renderText({ status_text() })
+
+  output$summary_status_text <- renderText({ summary_state$status })
+
+  observeEvent(input$run_summary_generator, {
+    req(input$summary_workbook)
+    summary_state$status <- "Generating narratives..."
+
+    output_dir <- input$summary_output_dir %||% ""
+    output_name <- input$summary_output_name %||% "summary_output.txt"
+
+    tryCatch({
+      result <- run_summary_generator(input$summary_workbook$datapath, output_dir, output_name)
+      summary_state$segment_sizes <- result$segment_sizes
+      summary_state$preview <- result$lines
+      summary_state$output_path <- result$output_path
+      summary_state$status <- sprintf("Summary generated at %s", result$output_path)
+      showNotification(sprintf("Narratives exported to %s", result$output_path), type = "message", duration = 6)
+    }, error = function(e) {
+      summary_state$status <- sprintf("Error: %s", e$message)
+      showNotification(summary_state$status, type = "error", duration = 7)
+    })
+  })
+
+  output$summary_segment_sizes <- renderTable({
+    segs <- summary_state$segment_sizes
+    if (is.null(segs) || !nrow(segs)) {
+      return(data.frame(Message = "Segment sizes will appear after generating the summary."))
+    }
+    data.frame(
+      Segment = segs$segment,
+      Percent = sprintf("%.1f%%", round(segs$percent, 1)),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  output$summary_preview <- renderText({
+    if (!length(summary_state$preview)) {
+      return("Preview will appear once the summary is generated.")
+    }
+    paste(summary_state$preview, collapse = "\n")
+  })
 
   output$manual_segment_styles <- renderUI({
     colors <- segment_colors()
