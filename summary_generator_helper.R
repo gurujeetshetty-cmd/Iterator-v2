@@ -11,6 +11,28 @@ format_percent <- function(value, digits = 0) {
   sprintf(paste0("%.", digits, "f%%"), round(as.numeric(value), digits))
 }
 
+normalize_theme_label <- function(theme_label, fallback = "General Insights") {
+  if (is.null(theme_label) || all(is.na(theme_label))) {
+    return(fallback)
+  }
+  label <- trimws(as.character(theme_label))
+  if (!nzchar(label)) {
+    return(fallback)
+  }
+  label
+}
+
+is_not_clear_theme <- function(theme_label) {
+  if (is.null(theme_label) || all(is.na(theme_label))) {
+    return(FALSE)
+  }
+  label <- trimws(as.character(theme_label))
+  if (!nzchar(label)) {
+    return(FALSE)
+  }
+  grepl("not\\s*clear", label, ignore.case = TRUE)
+}
+
 safe_numeric <- function(x) {
   vals <- suppressWarnings(as.numeric(x))
   vals[is.na(vals)] <- NA_real_
@@ -154,6 +176,14 @@ cross_segment_phrase <- function(target_segment, metrics, overall_metric, digits
   others <- seg_names[seg_names != target_segment]
   higher <- character(0)
   lower <- character(0)
+  other_metric <- NA_real_
+  if (length(others)) {
+    other_values <- safe_numeric(unlist(metrics[others]))
+    valid_other <- !is.na(other_values)
+    if (any(valid_other)) {
+      other_metric <- mean(other_values[valid_other])
+    }
+  }
 
   for (seg in others) {
     cmp <- passes_layer_rules(target_value, metrics[[seg]], overall_metric)
@@ -170,6 +200,9 @@ cross_segment_phrase <- function(target_segment, metrics, overall_metric, digits
     return(" compared to all other segments")
   }
   if (length(lower) && length(lower) == length(others)) {
+    if (!is.na(other_metric)) {
+      return(paste0(" much less so than other segments (", format_fn(other_metric, digits), ")"))
+    }
     return(" much less so than other segments")
   }
 
@@ -417,9 +450,19 @@ assemble_segment_text <- function(segment_sizes, narratives) {
   output_lines <- character(0)
   for (seg in segments) {
     header <- sprintf("Segment %s (%s)", seg, format_percent(segment_sizes$percent[segment_sizes$segment == seg]))
-    output_lines <- c(output_lines, header, "")
-    seg_narratives <- narratives[[seg]] %||% character(0)
-    output_lines <- c(output_lines, seg_narratives, "")
+    output_lines <- c(output_lines, header)
+    seg_narratives <- narratives[[seg]]
+    if (is.null(seg_narratives) || !length(seg_narratives)) {
+      output_lines <- c(output_lines, "")
+      next
+    }
+    output_lines <- c(output_lines, "")
+    for (theme_name in names(seg_narratives)) {
+      statements <- seg_narratives[[theme_name]]
+      if (!length(statements)) next
+      output_lines <- c(output_lines, sprintf("%s:", theme_name), statements, "")
+    }
+    output_lines <- c(output_lines, "")
   }
   output_lines
 }
@@ -470,11 +513,14 @@ build_all_narratives <- function(parsed) {
   meta <- normalize_meta(parsed$metadata)
   segment_sizes <- compute_segment_percentages(data)
   segments <- segment_sizes$segment
-  narratives_by_segment <- lapply(segments, function(x) character(0))
-  names(narratives_by_segment) <- segments
+  narratives_by_segment <- setNames(lapply(segments, function(x) list()), segments)
 
   for (i in seq_len(nrow(meta))) {
     meta_row <- meta[i, ]
+    if (is_not_clear_theme(meta_row$theme)) {
+      next
+    }
+    theme_label <- normalize_theme_label(meta_row$theme)
     overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$Weights, meta_row$variable_type)
     type <- meta_row$variable_type
 
@@ -504,7 +550,12 @@ build_all_narratives <- function(parsed) {
     }
 
     for (seg in segments) {
-      narratives_by_segment[[seg]] <- c(narratives_by_segment[[seg]], var_narratives[[seg]])
+      seg_bucket <- narratives_by_segment[[seg]][[theme_label]]
+      if (is.null(seg_bucket)) {
+        seg_bucket <- character(0)
+      }
+      seg_bucket <- c(seg_bucket, var_narratives[[seg]])
+      narratives_by_segment[[seg]][[theme_label]] <- seg_bucket
     }
   }
 
