@@ -542,11 +542,7 @@ ui <- dashboardPage(
           )
         ),
         fluidRow(
-          column(width = 6,
-            box(title = "Segment sizes", status = "primary", solidHeader = TRUE, width = 12,
-                tableOutput("summary_segment_sizes"))
-          ),
-          column(width = 6,
+          column(width = 12,
             box(title = "Narrative preview", status = "primary", solidHeader = TRUE, width = 12,
                 tags$small(class = "text-muted", "Text file format preview"),
                 verbatimTextOutput("summary_preview", placeholder = TRUE))
@@ -698,7 +694,6 @@ server <- function(input, output, session) {
 
   summary_state <- reactiveValues(
     status = "Upload the SUMMARY_GENERATOR workbook to begin.",
-    segment_sizes = NULL,
     preview = character(0),
     output_path = NULL
   )
@@ -733,7 +728,6 @@ server <- function(input, output, session) {
 
     tryCatch({
       result <- run_summary_generator(input$summary_workbook$datapath, output_dir, output_name)
-      summary_state$segment_sizes <- result$segment_sizes
       summary_state$preview <- result$lines
       summary_state$output_path <- result$output_path
       summary_state$status <- sprintf("Summary generated at %s", result$output_path)
@@ -742,18 +736,6 @@ server <- function(input, output, session) {
       summary_state$status <- sprintf("Error: %s", e$message)
       showNotification(summary_state$status, type = "error", duration = 7)
     })
-  })
-
-  output$summary_segment_sizes <- renderTable({
-    segs <- summary_state$segment_sizes
-    if (is.null(segs) || !nrow(segs)) {
-      return(data.frame(Message = "Segment sizes will appear after generating the summary."))
-    }
-    data.frame(
-      Segment = segs$segment,
-      Percent = sprintf("%.1f%%", round(segs$percent, 1)),
-      stringsAsFactors = FALSE
-    )
   })
 
   output$summary_preview <- renderText({
