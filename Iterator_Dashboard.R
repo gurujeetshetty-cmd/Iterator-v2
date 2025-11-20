@@ -8,7 +8,7 @@ packages <- c(
   "openxlsx", "dplyr", "tidyr", "lubridate", "plotly", "htmlwidgets", "RcppAlgos",
   "combinat", "parallel", "gRbase", "ggplot2", "weights", "poLCA",
   "stringi", "utf8", "purrr", "Hmisc", "checkmate", "jomo", "pan", "gtools",
-  "future", "promises"
+  "future", "promises", "httr", "jsonlite", "tibble"
 )
 for (pkg in packages) {
   if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
@@ -85,7 +85,9 @@ required_scripts <- c(
   "rules_check.R",
   "Iteration_loop.R",
   "Iteration_Runner.R",
-  "summary_generator_helper.R"
+  "summary_generator_helper.R",
+  "llm_clients.R",
+  "ai_summarizer_prompt.R"
 )
 
 script_dir <- get_script_path()
@@ -170,7 +172,8 @@ ui <- dashboardPage(
       menuItem("Input Generator", tabName = "input_generator", icon = icon("cogs"), selected = TRUE),
       menuItem("Output Generator", tabName = "output_generator", icon = icon("chart-line")),
       menuItem("Iteration Runner", tabName = "iteration_runner", icon = icon("play")),
-      menuItem("Summary Generator", tabName = "summary_generator", icon = icon("align-left"))
+      menuItem("Summary Generator", tabName = "summary_generator", icon = icon("align-left")),
+      menuItem("AI summarizer", tabName = "ai_summarizer", icon = icon("robot"))
     )
   ),
   dashboardBody(
@@ -552,7 +555,64 @@ ui <- dashboardPage(
       ),
 
       # ------------------------------------------------------
-      # TAB 4: ITERATION RUNNER
+      # TAB 4: AI SUMMARIZER
+      # ------------------------------------------------------
+      tabItem(tabName = "ai_summarizer",
+        fluidRow(
+          box(title = "AI summarizer", status = "primary", solidHeader = TRUE, width = 12,
+            div(class = "box-intro",
+                h4("LLM-based segment coherence review"),
+                p(class = "text-muted", style = "margin-bottom:0;",
+                  "Upload the narrative segments and a context prompt (both as .txt files), then route the request ",
+                  "to OpenAI, Groq, or Gemini for structured scoring.")),
+            div(class = "input-strip",
+                div(class = "input-block upload-block",
+                    fileInput("ai_segments_file", "Upload narrative (.txt)", accept = c(".txt"))),
+                div(class = "input-block upload-block",
+                    fileInput("ai_context_file", "Upload context prompt (.txt)", accept = c(".txt"))),
+                div(class = "input-block",
+                    selectInput("ai_provider", "LLM provider", choices = c("openai", "groq", "gemini"), selected = "openai")),
+                div(class = "input-block",
+                    textInput("ai_model", "Model name", value = llm_default_models()[["openai"]])),
+                div(class = "input-block",
+                    sliderInput("ai_temperature", "Temperature", min = 0, max = 1, value = 0.2, step = 0.05)),
+                div(class = "input-block",
+                    numericInput("ai_max_tokens", "Max tokens", value = 600, min = 100, max = 2000, step = 50))
+            ),
+            div(class = "action-area",
+                actionButton("run_ai_summarizer", "Score narrative", class = "btn btn-primary btn-lg"),
+                tags$small(class = "text-muted",
+                           icon("key"),
+                           span(" Set OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY in your environment before running.",
+                                style = "margin-left:6px;"))),
+            div(class = "output-status-callout",
+                strong("Status"),
+                textOutput("ai_status_text", container = function(...) tags$span(style = "display:block;font-weight:600;font-size:15px;", ...)))
+          )
+        ),
+        fluidRow(
+          box(title = "Prompt preview", status = "primary", solidHeader = TRUE, width = 6,
+              tags$small(class = "text-muted", "Expanded instructions sent to the model"),
+              verbatimTextOutput("ai_prompt_preview", placeholder = TRUE)),
+          box(title = "Model output (raw JSON)", status = "primary", solidHeader = TRUE, width = 6,
+              tags$small(class = "text-muted", "Ensure the model responds with valid JSON"),
+              verbatimTextOutput("ai_json_output", placeholder = TRUE))
+        ),
+        fluidRow(
+          box(title = "Coherence summary", status = "primary", solidHeader = TRUE, width = 6,
+              uiOutput("ai_score_badge"),
+              tags$small(class = "text-muted d-block mt-2", "15-word segment definition"),
+              textOutput("ai_definition_text"),
+              hr(),
+              tags$small(class = "text-muted d-block mt-2", "Detailed story"),
+              textOutput("ai_detailed_story")),
+          box(title = "Segment issues", status = "primary", solidHeader = TRUE, width = 6,
+              DT::dataTableOutput("ai_issue_table"))
+        )
+      ),
+
+      # ------------------------------------------------------
+      # TAB 5: ITERATION RUNNER
       # ------------------------------------------------------
       tabItem(tabName = "iteration_runner",
         fluidRow(
@@ -699,6 +759,15 @@ server <- function(input, output, session) {
     output_path = NULL
   )
 
+  ai_state <- reactiveValues(
+    status = "Upload a narrative and context prompt to begin.",
+    prompt = NULL,
+    raw_response = NULL,
+    parsed = NULL,
+    provider = "openai",
+    model = llm_default_models()[["openai"]]
+  )
+
   segment_colors <- reactive({
     segs <- manual_state$segment_summary$Segment
     if (is.null(segs) || !length(segs)) {
@@ -744,6 +813,113 @@ server <- function(input, output, session) {
       return("Preview will appear once the summary is generated.")
     }
     paste(summary_state$preview, collapse = "\n")
+  })
+
+  output$ai_status_text <- renderText({ ai_state$status })
+
+  observeEvent(input$ai_provider, {
+    defaults <- llm_default_models()
+    provider <- tolower(input$ai_provider %||% "")
+    ai_state$provider <- provider
+    default_model <- defaults[[provider]]
+    if (nzchar(default_model)) {
+      updateTextInput(session, "ai_model", value = default_model)
+    }
+  }, ignoreInit = TRUE)
+
+  read_txt_file <- function(file_input) {
+    if (is.null(file_input) || !length(file_input$datapath)) {
+      return("")
+    }
+    paste(readLines(file_input$datapath, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  }
+
+  observeEvent(input$run_ai_summarizer, {
+    req(input$ai_segments_file, input$ai_context_file)
+    ai_state$status <- "Building prompt..."
+
+    narrative_text <- read_txt_file(input$ai_segments_file)
+    context_prompt <- read_txt_file(input$ai_context_file)
+
+    prompt <- build_ai_summarizer_prompt(narrative_text, context_prompt)
+    ai_state$prompt <- prompt
+
+    ai_state$status <- sprintf("Calling %s...", toupper(input$ai_provider %||% ""))
+
+    tryCatch({
+      response <- call_llm_model(
+        provider = input$ai_provider,
+        model = input$ai_model,
+        prompt = prompt,
+        temperature = input$ai_temperature,
+        max_tokens = input$ai_max_tokens
+      )
+
+      ai_state$raw_response <- response$text
+      ai_state$parsed <- process_ai_summarizer_output(response$text)
+      ai_state$provider <- response$provider
+      ai_state$model <- response$model
+      ai_state$status <- sprintf("Response received from %s (%s)", toupper(response$provider), response$model)
+    }, error = function(e) {
+      ai_state$raw_response <- NULL
+      ai_state$parsed <- list(error = e$message)
+      ai_state$status <- sprintf("Error: %s", e$message)
+    })
+  })
+
+  output$ai_prompt_preview <- renderText({
+    if (is.null(ai_state$prompt)) {
+      return("Prompt preview will appear after you load files and run the summarizer.")
+    }
+    ai_state$prompt
+  })
+
+  output$ai_json_output <- renderText({
+    parsed <- ai_state$parsed
+    if (is.null(parsed)) {
+      return("Awaiting model response.")
+    }
+
+    if (!is.null(parsed$error)) {
+      return(sprintf("Parser note: %s\n\nRaw response:\n%s", parsed$error, ai_state$raw_response %||% "(empty)"))
+    }
+
+    parsed$raw_json %||% ai_state$raw_response %||% "(No JSON returned)"
+  })
+
+  output$ai_score_badge <- renderUI({
+    parsed <- ai_state$parsed
+    if (is.null(parsed) || is.null(parsed$coherence_score)) {
+      return(tags$span(class = "label label-default", "No score yet"))
+    }
+    score <- parsed$coherence_score
+    cls <- if (is.na(score)) "label label-warning" else if (score >= 80) "label label-success" else if (score >= 50) "label label-warning" else "label label-danger"
+    tags$span(class = cls, style = "font-size:14px;", sprintf("Coherence score: %s", ifelse(is.na(score), "N/A", score)))
+  })
+
+  output$ai_definition_text <- renderText({
+    parsed <- ai_state$parsed
+    if (is.null(parsed) || is.null(parsed$segment_definition)) {
+      return("Segment definition will appear here.")
+    }
+    parsed$segment_definition
+  })
+
+  output$ai_detailed_story <- renderText({
+    parsed <- ai_state$parsed
+    if (is.null(parsed) || is.null(parsed$detailed_story)) {
+      return("Detailed story will appear after a successful run.")
+    }
+    parsed$detailed_story
+  })
+
+  output$ai_issue_table <- DT::renderDataTable({
+    parsed <- ai_state$parsed
+    if (is.null(parsed) || is.null(parsed$segment_issues) || !nrow(parsed$segment_issues)) {
+      return(DT::datatable(tibble::tibble(Note = "No issues parsed yet"), options = list(dom = "t"), rownames = FALSE))
+    }
+
+    DT::datatable(parsed$segment_issues, options = list(dom = "t", pageLength = 5), rownames = FALSE)
   })
 
   output$manual_segment_styles <- renderUI({
