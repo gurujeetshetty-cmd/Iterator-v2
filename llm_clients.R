@@ -3,6 +3,13 @@
 # Date: 2025-02-06
 # Summary: Provider-agnostic LLM client helpers for OpenAI, Groq, and Gemini.
 
+`%||%` <- function(x, y) {
+  if (is.null(x)) return(y)
+  if (is.character(x) && !length(x)) return(y)
+  if (is.character(x) && !nzchar(x[1])) return(y)
+  x
+}
+
 assert_packages <- function(pkgs) {
   missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) {
@@ -23,6 +30,21 @@ llm_env_var <- function(provider) {
     gemini = "GEMINI_API_KEY",
     stop(sprintf("Unsupported provider: %s", provider), call. = FALSE)
   )
+}
+
+set_llm_api_key <- function(provider, key) {
+  provider <- tolower(provider %||% "")
+  if (!nzchar(provider)) {
+    stop("Provider is required to set an API key.", call. = FALSE)
+  }
+
+  env_var <- llm_env_var(provider)
+  if (!nzchar(key)) {
+    stop(sprintf("Key for %s is empty; supply a non-empty value.", provider), call. = FALSE)
+  }
+
+  Sys.setenv(structure(key, names = env_var))
+  invisible(env_var)
 }
 
 read_env_key <- function(provider) {
