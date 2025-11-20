@@ -82,6 +82,7 @@ source_helper <- function(file) {
 
 source_helper("metrics_fa.R")
 source_helper("metrics_pearson.R")
+source_helper("input_utils.R")
 
 # =========================================================
 # Shared data helpers
@@ -96,12 +97,24 @@ load_combination_data <- function(data, mandatory_variables_cols, log_fn = funct
   scores_sheet <- "VARIABLES"
   na_values    <- c("NA", ".", "", " ")
 
-  XTab_Data <- readxl::read_excel(data_path, sheet = input_sheet, na = na_values)
+  standardized_input <- read_standardized_input(data_path, sheet = input_sheet, na_values = na_values)
+  input_metadata <- standardized_input$metadata
+  candidate_meta <- input_metadata[input_metadata$input_flag_clean, , drop = FALSE]
+  if (!nrow(candidate_meta)) {
+    stop("No variables with INPUT_FLAG = 1 found in INPUT sheet.")
+  }
+
+  variable_meta <- candidate_meta[candidate_meta$column_index >= 4, , drop = FALSE]
+  if (!nrow(variable_meta)) {
+    stop("No candidate variables with INPUT_FLAG = 1 found beyond respondent identifier columns.")
+  }
+
+  XTab_Data <- standardized_input$data[, variable_meta$variable_id, drop = FALSE]
 
   variable_scores_raw <- readxl::read_excel(data_path, sheet = scores_sheet, range = "B2:C999")
   colnames(variable_scores_raw) <- c("Variable", "Score")
   variable_scores <- variable_scores_raw %>%
-    mutate(Variable = trimws(as.character(Variable)),
+    mutate(Variable = clean_variable_ids(Variable),
            Score    = suppressWarnings(as.numeric(Score))) %>%
     filter(!is.na(Variable) & nzchar(Variable)) %>%
     mutate(Score = ifelse(is.na(Score), 0, Score))
@@ -148,11 +161,9 @@ load_combination_data <- function(data, mandatory_variables_cols, log_fn = funct
     stop(msg)
   }
 
-  tv_map <- (XTab_Data[1, -c(1:3), drop = TRUE])
-  names(tv_map) <- colnames(XTab_Data)[-c(1:3)]
   Theme_Variable_Mapping <- tibble::tibble(
-    Variable = names(tv_map),
-    Theme    = as.character(unlist(tv_map))
+    Variable = variable_meta$variable_id,
+    Theme    = variable_meta$theme
   ) %>%
     left_join(variable_scores, by = "Variable") %>%
     mutate(Score = ifelse(is.na(Score), 0, Score),
@@ -161,12 +172,12 @@ load_combination_data <- function(data, mandatory_variables_cols, log_fn = funct
   mandatory_variables_cols <- as.integer(mandatory_variables_cols)
   mandatory_variables_cols <- mandatory_variables_cols[!is.na(mandatory_variables_cols)]
   if (length(mandatory_variables_cols) > 0) {
-    if (any(mandatory_variables_cols < 1 | mandatory_variables_cols > ncol(XTab_Data))) {
-      stop("mandatory_variables_cols contains indices outside INPUT sheet’s columns.")
+    if (any(mandatory_variables_cols < 1 | mandatory_variables_cols > nrow(variable_meta))) {
+      stop("mandatory_variables_cols contains indices outside available candidate variables.")
     }
   }
 
-  input_colnames <- colnames(XTab_Data)
+  input_colnames <- variable_meta$variable_id
   mandatory_vars <- intersect(input_colnames[mandatory_variables_cols], Theme_Variable_Mapping$Variable)
 
   theme_constraints <- setNames(

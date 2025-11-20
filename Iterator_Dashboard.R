@@ -80,6 +80,7 @@ required_scripts <- c(
   "Iteration_Prioritizer_vF3.R",
   "metrics_fa.R",
   "metrics_pearson.R",
+  "input_utils.R",
   "Function_poLCA.R",
   "rules_check.R",
   "Iteration_loop.R",
@@ -792,16 +793,13 @@ manual_metric_options <- c(
 
 build_manual_metadata <- function(path) {
   na_values <- c("NA", ".", "", " ")
-  raw <- readxl::read_excel(path, sheet = "INPUT", na = na_values, col_names = FALSE)
+  parsed <- read_standardized_input(path, sheet = "INPUT", na_values = na_values)
+  meta <- parsed$metadata
+  meta <- meta[meta$column_index >= 4, , drop = FALSE]
 
-  if (!nrow(raw) || ncol(raw) <= 3) {
+  if (!nrow(meta)) {
     stop("INPUT sheet does not contain variable metadata in expected format.")
   }
-
-  var_cols <- seq(4, ncol(raw))
-  variables <- as.character(unlist(raw[1, var_cols]))
-  themes <- if (nrow(raw) >= 2) as.character(unlist(raw[2, var_cols])) else rep(NA_character_, length(var_cols))
-  descriptions <- if (nrow(raw) >= 3) as.character(unlist(raw[3, var_cols])) else rep(NA_character_, length(var_cols))
 
   normalize_text <- function(x) {
     vals <- ifelse(is.na(x), NA_character_, trimws(as.character(x)))
@@ -809,10 +807,10 @@ build_manual_metadata <- function(path) {
   }
 
   tibble::tibble(
-    variable = normalize_text(variables),
-    theme = normalize_text(themes),
-    description = normalize_text(descriptions),
-    column_index = var_cols
+    variable = normalize_text(meta$variable_id),
+    theme = normalize_text(meta$theme),
+    description = normalize_text(meta$answer_description),
+    column_index = meta$column_index
   ) %>%
     dplyr::filter(!is.na(variable) & nzchar(variable))
 }
