@@ -26,6 +26,12 @@ library(weights)
 library(ggplot2)
 library(readxl)
 
+if (file.exists("input_utils.R")) {
+  source("input_utils.R")
+} else {
+  stop("input_utils.R not found. Please place it alongside Function_poLCA.R.")
+}
+
 #################################################
 
 
@@ -48,11 +54,16 @@ library(poLCA)
 library(weights)
 setwd(input_working_dir)
 na_values <- c("NA", ".", "", " ")
-XTab_Data <- read_excel(input_db_name, sheet = input_sheet, na = na_values)
+input_path <- file.path(input_working_dir, input_db_name)
+standardized_input <- read_standardized_input(input_path, sheet = input_sheet, na_values = na_values)
+input_metadata <- standardized_input$metadata
+XTab_Data <- as.data.frame(standardized_input$data, stringsAsFactors = FALSE)
 
 #If variable names were provided instead of numbers, convert to numbers
-if(is.character(cat_seg_var_list)) cat_seg_var_list <- which(names(XTab_Data) %in% cat_seg_var_list)
-if(is.character(cont_seg_var_list)) cont_seg_var_list <- which(names(XTab_Data) %in% cont_seg_var_list)
+if (is.character(cat_seg_var_list)) cat_seg_var_list <- match(cat_seg_var_list, names(XTab_Data))
+if (is.character(cont_seg_var_list)) cont_seg_var_list <- match(cont_seg_var_list, names(XTab_Data))
+cat_seg_var_list <- cat_seg_var_list[!is.na(cat_seg_var_list)]
+cont_seg_var_list <- cont_seg_var_list[!is.na(cont_seg_var_list)]
 
 ##############################################
 
@@ -61,26 +72,9 @@ xtab_var_rows <- c(4:ncol(XTab_Data))
 
 ##############################################
 input_seg_var_list <- c(cat_seg_var_list,cont_seg_var_list)
-
-for(col in input_seg_var_list){XTab_Data[2,col] <- paste0("00_SEGM_",XTab_Data[2,col])}
-
-XTab_Data_Orig_Ord <- XTab_Data[1,]
-
-tmp_c13 <- XTab_Data[,c(1:3)]
-tmp_c4N <- XTab_Data[,c(4:ncol(XTab_Data))]
-
-#UPDATED CODE BY GURUJEET BECAUSE REARRANGING WAS NOT WORKING ON HIS LAPTOP. PLEASE DELETE BELOW THREE LINES AND USE THE "#" CODE IF USING ANOTHER SYSTEM
-cols_with_00 <- grep("00", tmp_c4N[2,])
-reordered_tmp_c4N <- tmp_c4N[, c(cols_with_00, setdiff(seq_along(tmp_c4N), cols_with_00))]
-XTab_Data <- cbind(tmp_c13,reordered_tmp_c4N)
-
-
-
-#tmp_c4N <- tmp_c4N[,order(tmp_c4N[2,],tmp_c4N[1,])]
-#XTab_Data <- cbind(tmp_c13,tmp_c4N)
-
-XTab_Data_Labels <- XTab_Data[c(1:2),]
-XTab_Data <- XTab_Data[-c(1:2),]
+XTab_Data_Orig_Ord <- XTab_Data
+XTab_Data_Labels <- rbind(input_metadata$question_prefix, input_metadata$answer_description)
+colnames(XTab_Data_Labels) <- names(XTab_Data)
 
 ##############################################
 ###-FORMAT-SEG-INPUT-DB

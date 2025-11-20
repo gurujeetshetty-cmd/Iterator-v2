@@ -3,6 +3,12 @@
 # Date: 2024-11-17
 # Utility functions for SUMMARY_GENERATOR module.
 
+if (file.exists("input_utils.R")) {
+  source("input_utils.R")
+} else {
+  stop("input_utils.R not found. Please place it alongside summary_generator_helper.R.")
+}
+
 # ---- Formatting helpers ----
 format_percent <- function(value, digits = 0) {
   if (is.null(value) || is.na(value)) {
@@ -61,7 +67,7 @@ weighted_sd_safe <- function(x, w) {
 }
 
 # ---- Segment size calculator ----
-compute_segment_percentages <- function(data, seg_col = "SEGM", weight_col = "Weights") {
+compute_segment_percentages <- function(data, seg_col = "SEGM", weight_col = "WEIGHTS") {
   if (!seg_col %in% names(data)) stop(sprintf("Missing segment column: %s", seg_col))
   if (!weight_col %in% names(data)) stop(sprintf("Missing weight column: %s", weight_col))
 
@@ -262,7 +268,7 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
 
   for (seg in segments) {
     seg_data <- data[data$SEGM == seg, ]
-    metrics <- calculate_rating_metrics(seg_data[[meta_row$variable_id]], seg_data$Weights, meta_row$variable_type)
+    metrics <- calculate_rating_metrics(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS, meta_row$variable_type)
     phrase_info <- select_rating_phrase(metrics, meta_row$variable_type)
 
     display_value <- if (phrase_info$metric_type %in% c("top", "top2")) metrics$t2b else metrics$b2b
@@ -296,7 +302,7 @@ build_singleselect_narratives <- function(data, meta_row, segments, overall_mode
 
   for (seg in segments) {
     seg_data <- data[data$SEGM == seg, ]
-    mode_info <- calculate_mode_share(seg_data[[meta_row$variable_id]], seg_data$Weights)
+    mode_info <- calculate_mode_share(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS)
     mode_shares[[seg]] <- mode_info$share
 
     phrase <- if (mode_info$share >= 60) {
@@ -333,7 +339,7 @@ build_multiselect_narratives <- function(data, meta_row, segments, overall_selec
 
   for (seg in segments) {
     seg_data <- data[data$SEGM == seg, ]
-    pct <- calculate_selection_share(seg_data[[meta_row$variable_id]], seg_data$Weights, 1)
+    pct <- calculate_selection_share(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS, 1)
     selection[[seg]] <- pct
 
     phrase <- if (pct >= 60) {
@@ -368,7 +374,7 @@ build_numeric_narratives <- function(data, meta_row, segments, overall_mean, ove
 
   for (seg in segments) {
     seg_data <- data[data$SEGM == seg, ]
-    seg_mean <- weighted_mean_safe(seg_data[[meta_row$variable_id]], seg_data$Weights)
+    seg_mean <- weighted_mean_safe(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS)
     means[[seg]] <- seg_mean
 
     phrase <- if (!is.na(seg_mean) && !is.na(overall_sd) && seg_mean >= overall_mean + 0.30 * overall_sd) {
@@ -413,7 +419,7 @@ build_ranking_narratives <- function(data, meta_row, segments, overall_rank1) {
   for (seg in segments) {
     seg_data <- data[data$SEGM == seg, ]
     values <- safe_numeric(seg_data[[meta_row$variable_id]])
-    weights <- safe_numeric(seg_data$Weights)
+    weights <- safe_numeric(seg_data$WEIGHTS)
     valid <- !is.na(values) & !is.na(weights)
     total <- sum(weights[valid])
     if (total <= 0) {
@@ -478,39 +484,36 @@ write_summary_txt <- function(lines, output_dir, file_name) {
 
 # ---- Main orchestrator ----
 parse_summary_input <- function(path) {
-  raw <- readxl::read_excel(path, sheet = "SUMMARY_GENERATOR", col_names = FALSE)
-  if (nrow(raw) < 7) stop("SUMMARY_GENERATOR sheet missing data rows.")
+  parsed <- read_standardized_input(path, sheet = "SUMMARY_GENERATOR", na_values = c("NA", ".", "", " "))
+  data_rows <- parsed$data
+  metadata <- parsed$metadata
+  metadata <- metadata[metadata$column_index >= 4, , drop = FALSE]
+  if (!nrow(metadata)) {
+    stop("SUMMARY_GENERATOR sheet does not contain variable columns beyond respondent metadata.")
+  }
 
-  headers <- as.character(unlist(raw[1, ]))
-  data_rows <- raw[-seq_len(6), ]
-  colnames(data_rows) <- headers
+  if ("WEIGHTS" %in% names(data_rows)) {
+    data_rows$WEIGHTS <- safe_numeric(data_rows$WEIGHTS)
+  }
 
-  meta <- data.frame(
-    variable_id = headers[4:length(headers)],
-    theme = as.character(unlist(raw[2, 4:length(headers)])),
-    answer_description = as.character(unlist(raw[3, 4:length(headers)])),
-    variable_type = as.character(unlist(raw[4, 4:length(headers)])),
-    question_prefix = as.character(unlist(raw[5, 4:length(headers)])),
-    input_flag = as.character(unlist(raw[6, 4:length(headers)])),
-    stringsAsFactors = FALSE
-  )
-
-  data_rows$Weights <- safe_numeric(data_rows$Weights)
-  list(data = data_rows, metadata = meta)
+  list(data = data_rows, metadata = metadata)
 }
 
-normalize_meta <- function(meta) {
+normalize_meta <- function(meta, use_input_flag = TRUE) {
   allowed <- c("RATING7", "RATING5", "SINGLESELECT", "MULTISELECT", "NUMERIC", "RANKING")
-  meta$variable_type <- toupper(trimws(meta$variable_type))
+  meta$variable_type <- clean_variable_types(meta$variable_type)
   meta <- meta[meta$variable_type %in% allowed, ]
   meta$input_flag <- tolower(trimws(meta$input_flag))
-  meta$include <- ifelse(meta$input_flag %in% c("0", "n", "no"), FALSE, TRUE)
-  meta[meta$include, ]
+  if (isTRUE(use_input_flag)) {
+    meta$include <- ifelse(meta$input_flag %in% c("0", "n", "no", "false"), FALSE, TRUE)
+    meta <- meta[meta$include, ]
+  }
+  meta
 }
 
 build_all_narratives <- function(parsed) {
   data <- parsed$data
-  meta <- normalize_meta(parsed$metadata)
+  meta <- normalize_meta(parsed$metadata, use_input_flag = FALSE)
   segment_sizes <- compute_segment_percentages(data)
   segments <- segment_sizes$segment
   narratives_by_segment <- setNames(lapply(segments, function(x) list()), segments)
@@ -521,7 +524,7 @@ build_all_narratives <- function(parsed) {
       next
     }
     theme_label <- normalize_theme_label(meta_row$theme)
-    overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$Weights, meta_row$variable_type)
+    overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$WEIGHTS, meta_row$variable_type)
     type <- meta_row$variable_type
 
     if (type == "RATING7") {
@@ -529,18 +532,18 @@ build_all_narratives <- function(parsed) {
     } else if (type == "RATING5") {
       var_narratives <- build_rating_narratives(data, meta_row, segments, list(top2 = overall_values$t2b, top3 = NA_real_))
     } else if (type == "SINGLESELECT") {
-      overall_mode <- calculate_mode_share(data[[meta_row$variable_id]], data$Weights)
+      overall_mode <- calculate_mode_share(data[[meta_row$variable_id]], data$WEIGHTS)
       var_narratives <- build_singleselect_narratives(data, meta_row, segments, overall_mode$share)
     } else if (type == "MULTISELECT") {
-      overall_selection <- calculate_selection_share(data[[meta_row$variable_id]], data$Weights, 1)
+      overall_selection <- calculate_selection_share(data[[meta_row$variable_id]], data$WEIGHTS, 1)
       var_narratives <- build_multiselect_narratives(data, meta_row, segments, overall_selection)
     } else if (type == "NUMERIC") {
-      overall_mean <- weighted_mean_safe(data[[meta_row$variable_id]], data$Weights)
-      overall_sd <- weighted_sd_safe(data[[meta_row$variable_id]], data$Weights)
+      overall_mean <- weighted_mean_safe(data[[meta_row$variable_id]], data$WEIGHTS)
+      overall_sd <- weighted_sd_safe(data[[meta_row$variable_id]], data$WEIGHTS)
       var_narratives <- build_numeric_narratives(data, meta_row, segments, overall_mean, overall_sd)
     } else if (type == "RANKING") {
       values <- safe_numeric(data[[meta_row$variable_id]])
-      weights <- safe_numeric(data$Weights)
+      weights <- safe_numeric(data$WEIGHTS)
       valid <- !is.na(values) & !is.na(weights)
       total <- sum(weights[valid])
       overall_rank1 <- if (total > 0) sum(weights[valid & values == 1]) / total * 100 else 0
