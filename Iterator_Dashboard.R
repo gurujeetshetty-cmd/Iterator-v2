@@ -7,7 +7,7 @@ packages <- c(
   "shiny", "shinydashboard", "DT", "shinyWidgets", "shinyFiles", "readxl", "shinyjs",
   "openxlsx", "dplyr", "tidyr", "lubridate", "plotly", "htmlwidgets", "RcppAlgos",
   "combinat", "parallel", "gRbase", "ggplot2", "weights", "poLCA",
-  "stringi", "utf8", "purrr", "Hmisc", "checkmate", "jomo", "pan", "gtools",
+  "stringi", "stringr", "utf8", "purrr", "Hmisc", "checkmate", "jomo", "pan", "gtools",
   "future", "promises", "httr", "jsonlite", "tibble"
 )
 for (pkg in packages) {
@@ -87,7 +87,8 @@ required_scripts <- c(
   "Iteration_Runner.R",
   "summary_generator_helper.R",
   "llm_clients.R",
-  "ai_summarizer_prompt.R"
+  "ai_summarizer_prompt.R",
+  "bulk_llm_summarizer.R"
 )
 
 script_dir <- get_script_path()
@@ -173,7 +174,8 @@ ui <- dashboardPage(
       menuItem("Output Generator", tabName = "output_generator", icon = icon("chart-line")),
       menuItem("Iteration Runner", tabName = "iteration_runner", icon = icon("play")),
       menuItem("Summary Generator", tabName = "summary_generator", icon = icon("align-left")),
-      menuItem("AI summarizer", tabName = "ai_summarizer", icon = icon("robot"))
+      menuItem("AI summarizer", tabName = "ai_summarizer", icon = icon("robot")),
+      menuItem("Bulk LLM Summarizer", tabName = "bulk_summarizer", icon = icon("layer-group"))
     )
   ),
   dashboardBody(
@@ -613,7 +615,57 @@ ui <- dashboardPage(
       ),
 
       # ------------------------------------------------------
-      # TAB 5: ITERATION RUNNER
+      # TAB 5: BULK LLM SUMMARIZER
+      # ------------------------------------------------------
+      tabItem(tabName = "bulk_summarizer",
+        fluidRow(
+          box(title = "Bulk LLM Summarizer", status = "primary", solidHeader = TRUE, width = 12,
+            div(class = "box-intro",
+                h4("Summarize multiple iterations with one click"),
+                p(class = "text-muted", style = "margin-bottom:0;",
+                  "Load the combinations output (.csv), read each segment summary path, and send the full text to the LLM for structured scoring.")),
+            div(class = "input-strip",
+                div(class = "input-block upload-block",
+                    fileInput("bulk_combos_csv", "Upload combination output (.csv)", accept = c(".csv"))),
+                div(class = "input-block upload-block",
+                    fileInput("bulk_context_prompt", "Optional context prompt (.txt)", accept = c(".txt"))),
+                div(class = "input-block",
+                    textInput("bulk_output_dir", "AI output directory", value = file.path(getwd(), "AI_OUTPUT"))),
+                div(class = "input-block",
+                    selectInput("bulk_llm_provider", "LLM provider", choices = c("openai", "groq", "gemini"), selected = "openai")),
+                div(class = "input-block",
+                    textInput("bulk_llm_model", "Model name", value = llm_default_models()[["openai"]])),
+                div(class = "input-block",
+                    sliderInput("bulk_llm_temperature", "Temperature", min = 0, max = 1, value = 0.2, step = 0.05)),
+                div(class = "input-block",
+                    numericInput("bulk_llm_max_tokens", "Max tokens", value = 800, min = 200, max = 4000, step = 50))
+            ),
+            uiOutput("bulk_column_inputs"),
+            div(class = "action-area",
+                actionButton("run_bulk_summarizer", "Run LLM summarization", class = "btn btn-primary btn-lg"),
+                tags$small(class = "text-muted",
+                           icon("robot"),
+                           span(" Reads each segment_txt_path and prompt path per iteration, then validates the returned structure.",
+                                style = "margin-left:6px;"))),
+            div(class = "output-status-callout",
+                strong("Status"),
+                textOutput("bulk_status_text", container = function(...) tags$span(style = "display:block;font-weight:600;font-size:15px;", ...)),
+                strong("Progress"),
+                textOutput("bulk_progress_text", container = function(...) tags$span(style = "display:block;font-weight:600;font-size:15px;", ...)))
+          )
+        ),
+        fluidRow(
+          box(title = "Iteration metrics", status = "primary", solidHeader = TRUE, width = 6,
+              tags$small(class = "text-muted", "clarity_score_0_100, solution_issues_brief, ai_output_file_path"),
+              DT::dataTableOutput("bulk_metrics_table")),
+          box(title = "Combinations joined with AI outputs", status = "primary", solidHeader = TRUE, width = 6,
+              tags$small(class = "text-muted", "Original combination output with appended AI columns"),
+              DT::dataTableOutput("bulk_joined_table"))
+        )
+      ),
+
+      # ------------------------------------------------------
+      # TAB 6: ITERATION RUNNER
       # ------------------------------------------------------
       tabItem(tabName = "iteration_runner",
         fluidRow(
@@ -769,6 +821,17 @@ server <- function(input, output, session) {
     model = llm_default_models()[["openai"]]
   )
 
+  bulk_state <- reactiveValues(
+    status = "Upload the combinations output CSV to begin.",
+    combos = NULL,
+    metrics = NULL,
+    joined = NULL,
+    tokens_used = 0,
+    iterations_done = 0,
+    column_choices = list(id = character(0), segment = character(0), prompt = character(0)),
+    context_prompt = ""
+  )
+
   segment_colors <- reactive({
     segs <- manual_state$segment_summary$Segment
     if (is.null(segs) || !length(segs)) {
@@ -921,6 +984,183 @@ server <- function(input, output, session) {
     }
 
     DT::datatable(parsed$segment_issues, options = list(dom = "t", pageLength = 5), rownames = FALSE)
+  })
+
+  output$bulk_status_text <- renderText({ bulk_state$status })
+
+  output$bulk_progress_text <- renderText({
+    total <- if (is.null(bulk_state$combos)) 0 else nrow(bulk_state$combos)
+    sprintf("Processed %s/%s iterations | ~%s tokens", bulk_state$iterations_done, total, bulk_state$tokens_used)
+  })
+
+  observeEvent(input$bulk_llm_provider, {
+    defaults <- llm_default_models()
+    provider <- tolower(input$bulk_llm_provider %||% "")
+    default_model <- defaults[[provider]]
+    if (nzchar(default_model)) {
+      updateTextInput(session, "bulk_llm_model", value = default_model)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$bulk_context_prompt, {
+    bulk_state$context_prompt <- read_txt_file(input$bulk_context_prompt)
+  })
+
+  observeEvent(input$bulk_combos_csv, {
+    file <- input$bulk_combos_csv
+    if (is.null(file)) {
+      bulk_state$status <- "Upload the combinations output CSV to begin."
+      bulk_state$combos <- NULL
+      return()
+    }
+
+    tryCatch({
+      combos <- utils::read.csv(file$datapath, stringsAsFactors = FALSE, check.names = FALSE)
+      bulk_state$combos <- combos
+      choices <- names(combos)
+      bulk_state$column_choices <- list(id = choices, segment = choices, prompt = c("(none)", choices))
+      updateSelectInput(session, "bulk_iteration_id_col", choices = choices, selected = choices[[1]])
+      default_segment <- choices[grepl("segment", choices, ignore.case = TRUE)]
+      if (length(default_segment)) {
+        updateSelectInput(session, "bulk_segment_path_col", choices = choices, selected = default_segment[[1]])
+      } else {
+        updateSelectInput(session, "bulk_segment_path_col", choices = choices)
+      }
+      updateSelectInput(session, "bulk_prompt_path_col", choices = c("(none)", choices), selected = "(none)")
+      bulk_state$status <- sprintf("Loaded %s iterations from CSV.", nrow(combos))
+    }, error = function(e) {
+      bulk_state$status <- sprintf("Error reading CSV: %s", e$message)
+      showNotification(bulk_state$status, type = "error", duration = 7)
+    })
+  })
+
+  output$bulk_column_inputs <- renderUI({
+    combos <- bulk_state$combos
+    if (is.null(combos)) {
+      return(div(class = "box-intro", h4("Awaiting combination output"), p(class = "text-muted", "Upload the combinations CSV to choose the ID, segment path, and prompt columns.")))
+    }
+
+    choices <- names(combos)
+    fluidRow(
+      column(width = 4, selectInput("bulk_iteration_id_col", "Iteration ID column", choices = choices, selected = input$bulk_iteration_id_col %||% choices[[1]])),
+      column(width = 4, selectInput("bulk_segment_path_col", "Segment summary path column", choices = choices, selected = input$bulk_segment_path_col %||% choices[[1]])),
+      column(width = 4, selectInput("bulk_prompt_path_col", "Prompt path column (optional)", choices = c("(none)", choices), selected = input$bulk_prompt_path_col %||% "(none)"))
+    )
+  })
+
+  observeEvent(input$run_bulk_summarizer, {
+    combos <- bulk_state$combos
+    req(combos)
+
+    id_col <- input$bulk_iteration_id_col %||% ""
+    segment_col <- input$bulk_segment_path_col %||% ""
+    prompt_col <- input$bulk_prompt_path_col %||% "(none)"
+
+    validate(need(id_col %in% names(combos), "Iteration ID column not found in CSV."))
+    validate(need(segment_col %in% names(combos), "Segment summary path column not found in CSV."))
+
+    output_dir <- input$bulk_output_dir %||% file.path(getwd(), "AI_OUTPUT")
+    if (!dir.exists(output_dir)) {
+      dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+
+    context_prompt <- bulk_state$context_prompt %||% ""
+
+    bulk_state$status <- "Running LLM summarization across iterations..."
+    bulk_state$iterations_done <- 0
+    bulk_state$tokens_used <- 0
+
+    total <- nrow(combos)
+    metrics <- list()
+
+    withProgress(message = "LLM summarization in progress", value = 0, {
+      for (idx in seq_len(total)) {
+        incProgress(1 / total, detail = sprintf("Iteration %s of %s", idx, total))
+
+        iter_id <- combos[[id_col]][idx]
+        seg_path <- combos[[segment_col]][idx]
+        prompt_path <- if (!identical(prompt_col, "(none)") && prompt_col %in% names(combos)) combos[[prompt_col]][idx] else ""
+
+        segment_text <- read_text_safely(seg_path)
+        prompt_text <- read_text_safely(prompt_path)
+
+        if (!nzchar(segment_text)) {
+          warning_msg <- sprintf("Iteration %s skipped: segment text missing at %s", iter_id %||% idx, seg_path %||% "(blank)")
+          showNotification(warning_msg, type = "warning", duration = 6)
+          next
+        }
+
+        res <- tryCatch(
+          run_llm_summary(
+            segment_text = segment_text,
+            prompt_text = prompt_text,
+            context_prompt = context_prompt,
+            provider = input$bulk_llm_provider,
+            model = input$bulk_llm_model,
+            temperature = input$bulk_llm_temperature,
+            max_tokens = input$bulk_llm_max_tokens
+          ),
+          error = function(e) list(error = e$message)
+        )
+
+        if (!is.null(res$error)) {
+          warning_msg <- sprintf("Iteration %s failed: %s", iter_id %||% idx, res$error)
+          showNotification(warning_msg, type = "error", duration = 7)
+          next
+        }
+
+        safe_id <- if (length(iter_id) && nzchar(iter_id[1])) iter_id[1] else idx
+        safe_id <- gsub("[^A-Za-z0-9_-]", "_", as.character(safe_id))
+        output_file <- file.path(output_dir, sprintf("AI_output_iter_%s.txt", safe_id))
+        writeLines(res$full_text, output_file, useBytes = TRUE)
+
+        metrics[[length(metrics) + 1]] <- data.frame(
+          iteration_id = iter_id,
+          clarity_score_0_100 = res$clarity_score,
+          solution_issues_brief = res$issues_brief,
+          ai_output_file_path = output_file,
+          stringsAsFactors = FALSE
+        )
+
+        bulk_state$tokens_used <- bulk_state$tokens_used + res$tokens_used
+        bulk_state$iterations_done <- bulk_state$iterations_done + 1
+      }
+    })
+
+    metrics_df <- if (length(metrics)) do.call(rbind, metrics) else data.frame(
+      iteration_id = character(0),
+      clarity_score_0_100 = numeric(0),
+      solution_issues_brief = character(0),
+      ai_output_file_path = character(0),
+      stringsAsFactors = FALSE
+    )
+
+    bulk_state$metrics <- metrics_df
+
+    if (nrow(metrics_df)) {
+      joined <- merge(combos, metrics_df, by.x = id_col, by.y = "iteration_id", all.x = TRUE)
+      bulk_state$joined <- joined
+    } else {
+      bulk_state$joined <- combos
+    }
+
+    bulk_state$status <- sprintf("Completed %s/%s iterations.", bulk_state$iterations_done, total)
+  })
+
+  output$bulk_metrics_table <- DT::renderDataTable({
+    metrics <- bulk_state$metrics
+    if (is.null(metrics) || !nrow(metrics)) {
+      return(DT::datatable(data.frame(Message = "No LLM runs yet."), options = list(dom = "t"), rownames = FALSE))
+    }
+    DT::datatable(metrics, options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
+  })
+
+  output$bulk_joined_table <- DT::renderDataTable({
+    joined <- bulk_state$joined
+    if (is.null(joined) || !nrow(joined)) {
+      return(DT::datatable(data.frame(Message = "Load a combinations file and run summarization."), options = list(dom = "t"), rownames = FALSE))
+    }
+    DT::datatable(joined, options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
   })
 
   output$manual_segment_styles <- renderUI({
