@@ -505,6 +505,7 @@ ui <- dashboardPage(
                     numericInput("num_segments", "# of Segments", value = 4, min = 1, max = 10))
             ),
             div(class = "action-area",
+                checkboxInput("run_summary_txt", "Run SUMMARY_GENERATOR and save .txt narratives", value = FALSE),
                 actionButton("run_output_generator", "Run Output Generator", class = "btn btn-primary btn-lg"),
                 tags$small(class = "text-muted",
                            icon("star"),
@@ -2840,7 +2841,8 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         num_segments,
         file_name,
         solo = FALSE,
-        progress_cb = progress_update
+        progress_cb = progress_update,
+        run_summary_txt = isTRUE(input$run_summary_txt)
       )
       append_log("Output generation completed successfully.")
       status_text("Output generation completed successfully.")
@@ -3311,7 +3313,9 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
           Var_cols = paste(column_indices, collapse = ","),
           Ran_Iteration_Flag = 1L,
           ITR_PATH = manual_run_dir,
-          ITR_FILE_NAME = summary_basename
+          ITR_FILE_NAME = summary_basename,
+          SUMMARY_TXT_PATH = NA_character_,
+          SUMMARY_TXT_FILE = NA_character_
         )
 
         if (nrow(seg_incidence)) {
@@ -3370,8 +3374,8 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
         }
 
         base_add_cols <- c(
-          "Ran_Iteration_Flag", "ITR_PATH", "ITR_FILE_NAME", "MAX_N_SIZE", "MAX_N_SIZE_PERC",
-          "MIN_N_SIZE", "MIN_N_SIZE_PERC", "SOLUTION_N_SIZE", "PROB_95", "PROB_90", "PROB_80",
+          "Ran_Iteration_Flag", "ITR_PATH", "ITR_FILE_NAME", "SUMMARY_TXT_PATH", "SUMMARY_TXT_FILE",
+          "MAX_N_SIZE", "MAX_N_SIZE_PERC", "MIN_N_SIZE", "MIN_N_SIZE_PERC", "SOLUTION_N_SIZE", "PROB_95", "PROB_90", "PROB_80",
           "PROB_75", "PROB_LESS_THAN_50", "BIMODAL_VARS", "PROPER_BUCKETED_VARS",
           "BIMODAL_VARS_PERC", "ROV_SD", "ROV_RANGE", "seg1_diff", "seg2_diff", "seg3_diff",
           "seg4_diff", "seg5_diff", "bi_1", "perf_1", "indT_1", "indB_1", "bi_2", "perf_2",

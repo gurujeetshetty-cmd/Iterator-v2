@@ -1,7 +1,13 @@
 library(readxl)
 
+if (!exists("run_summary_generator")) {
+  if (file.exists("summary_generator_helper.R")) {
+    source("summary_generator_helper.R")
+  }
+}
+
 # Function to run the iterations
-run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_db_name,set_num_segments,File_name,solo, progress_cb = NULL) {
+run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_db_name,set_num_segments,File_name,solo, progress_cb = NULL, run_summary_txt = FALSE) {
   print(paste0("SOLO VALUE -4: ",solo))
   # Read the Excel file
   file_path<-file.path(comb_data[[1]],comb_data[[2]])
@@ -108,7 +114,7 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
   }
 
   input_data <- ensure_column(input_data, "Ran_Iteration_Flag", 0)
-  input_data <- ensure_columns(input_data, c("ITR_PATH", "ITR_FILE_NAME"), NA)
+  input_data <- ensure_columns(input_data, c("ITR_PATH", "ITR_FILE_NAME", "SUMMARY_TXT_PATH", "SUMMARY_TXT_FILE"), NA)
   input_data$ITR_FILE_NAME <- as.character(input_data$ITR_FILE_NAME)
 
   rules_checker_cols <- c(
@@ -132,13 +138,14 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
   }
 
   tracker_scaffold_cols <- c(
-    "Ran_Iteration_Flag","ITR_PATH","ITR_FILE_NAME","MAX_N_SIZE","MAX_N_SIZE_PERC",
-    "MIN_N_SIZE","MIN_N_SIZE_PERC","SOLUTION_N_SIZE","PROB_95","PROB_90","PROB_80",
-    "PROB_75","PROB_LESS_THAN_50","BIMODAL_VARS","PROPER_BUCKETED_VARS",
-    "BIMODAL_VARS_PERC","ROV_SD","ROV_RANGE","seg1_diff","seg2_diff","seg3_diff",
-    "seg4_diff","seg5_diff","bi_1","perf_1","indT_1","indB_1","bi_2","perf_2",
-    "indT_2","indB_2","bi_3","perf_3","indT_3","indB_3","bi_4","perf_4","indT_4",
-    "indB_4","bi_5","perf_5","indT_5","indB_5"
+    "Ran_Iteration_Flag","ITR_PATH","ITR_FILE_NAME","SUMMARY_TXT_PATH","SUMMARY_TXT_FILE",
+    "MAX_N_SIZE","MAX_N_SIZE_PERC","MIN_N_SIZE","MIN_N_SIZE_PERC","SOLUTION_N_SIZE",
+    "PROB_95","PROB_90","PROB_80","PROB_75","PROB_LESS_THAN_50","BIMODAL_VARS",
+    "PROPER_BUCKETED_VARS","BIMODAL_VARS_PERC","ROV_SD","ROV_RANGE","seg1_diff",
+    "seg2_diff","seg3_diff","seg4_diff","seg5_diff","bi_1","perf_1","indT_1",
+    "indB_1","bi_2","perf_2","indT_2","indB_2","bi_3","perf_3","indT_3",
+    "indB_3","bi_4","perf_4","indT_4","indB_4","bi_5","perf_5","indT_5",
+    "indB_5"
   )
 
   ordered_input_perf_cols <- input_perf_cols
@@ -238,6 +245,36 @@ check_and_assign <- function(df, i, col, val, var_name) {
 
     input_data <- check_and_assign(input_data, i, "ITR_PATH", output_working_dir, "ITR_PATH")
     input_data <- check_and_assign(input_data, i, "ITR_FILE_NAME", paste0(file_run_and_date, "_SUMMARY.xlsx"), "ITR_FILE_NAME")
+
+    summary_txt_path <- NA_character_
+    summary_txt_file <- NA_character_
+
+    if (run_summary_txt) {
+      summary_workbook_path <- file.path(output_working_dir, paste0(file_run_and_date, "_SUMMARY.xlsx"))
+      summary_txt_name <- paste0(file_run_and_date, "_SUMMARY.txt")
+
+      safe_progress(
+        processed_iterations,
+        total_iterations,
+        iteration = i,
+        status = sprintf("Running SUMMARY_GENERATOR for iteration %d", i)
+      )
+
+      if (file.exists(summary_workbook_path)) {
+        tryCatch({
+          summary_result <- run_summary_generator(summary_workbook_path, output_working_dir, summary_txt_name)
+          summary_txt_path <- summary_result$output_path
+          summary_txt_file <- basename(summary_result$output_path)
+        }, error = function(e) {
+          cat("⚠️ Failed to run SUMMARY_GENERATOR for iteration", i, ":", conditionMessage(e), "\n")
+        })
+      } else {
+        cat("⚠️ SUMMARY_GENERATOR workbook missing for iteration", i, "at", summary_workbook_path, "\n")
+      }
+    }
+
+    input_data <- check_and_assign(input_data, i, "SUMMARY_TXT_PATH", summary_txt_path, "SUMMARY_TXT_PATH")
+    input_data <- check_and_assign(input_data, i, "SUMMARY_TXT_FILE", summary_txt_file, "SUMMARY_TXT_FILE")
 
     # --- RULES_Checker outputs ---
     input_data <- check_and_assign(input_data, i, "MAX_N_SIZE", RULES_OP$Max_n_size, "Max_n_size")
