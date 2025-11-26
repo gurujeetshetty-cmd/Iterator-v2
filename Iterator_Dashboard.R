@@ -26,8 +26,25 @@ utils::globalVariables(c(
 
 options(shiny.autoreload = TRUE)
 
+# ---- Configuration bridge ----
+iterator_config <- getOption("iterator.config", default = list())
+
 # ---- Directory & Source ----
-DIRECTORY_PATH <- "C:/Users/gs36325/Documents/ENHERTU"
+cfg_get <- function(name, fallback = NULL, normalize = FALSE) {
+  val <- safe_named_get(iterator_config, name)
+  if (is.null(val)) {
+    return(fallback)
+  }
+  if (isTRUE(normalize)) {
+    val <- normalize_if_exists(val)
+  }
+  val
+}
+
+if (!is.null(cfg_get("shiny_host"))) options(shiny.host = cfg_get("shiny_host"))
+if (!is.null(cfg_get("shiny_port"))) options(shiny.port = cfg_get("shiny_port"))
+
+DIRECTORY_PATH <- cfg_get("iterator_home", "C:/Users/gs36325/Documents/ENHERTU", normalize = TRUE)
 
 get_script_path <- function() {
   cmd_args <- commandArgs(trailingOnly = FALSE)
@@ -76,6 +93,23 @@ safe_named_get <- function(x, key) {
   NULL
 }
 
+iterator_paths <- list(
+  home = cfg_get("iterator_home", DIRECTORY_PATH, normalize = TRUE),
+  input_directory = cfg_get("input_directory", DIRECTORY_PATH, normalize = TRUE),
+  output_directory = cfg_get("output_directory", DIRECTORY_PATH, normalize = TRUE),
+  tracker_directory = cfg_get("tracker_directory", DIRECTORY_PATH, normalize = TRUE),
+  summary_directory = cfg_get("summary_directory", DIRECTORY_PATH, normalize = TRUE)
+)
+
+for (nm in names(iterator_paths)) {
+  if (!is.null(iterator_paths[[nm]]) && !dir.exists(iterator_paths[[nm]])) {
+    dir.create(iterator_paths[[nm]], recursive = TRUE, showWarnings = FALSE)
+  }
+}
+
+DIRECTORY_PATH <- iterator_paths$home %||% DIRECTORY_PATH
+output_root <- iterator_paths$output_directory %||% DIRECTORY_PATH
+
 required_scripts <- c(
   "Iteration_Prioritizer_vF3.R",
   "metrics_fa.R",
@@ -96,6 +130,10 @@ if (!is.null(script_dir)) {
   script_dir <- normalize_if_exists(script_dir)
 }
 env_dir <- Sys.getenv("ITERATOR_HOME", unset = "")
+if (!nzchar(env_dir) && !is.null(iterator_paths$home)) {
+  Sys.setenv(ITERATOR_HOME = iterator_paths$home)
+  env_dir <- iterator_paths$home
+}
 
 candidate_sources <- normalize_if_exists(c(
   getwd(),
@@ -419,22 +457,22 @@ ui <- dashboardPage(
                   div(class = "input-block upload-block",
                       fileInput("input_file", "Upload Excel File", accept = ".xlsx")),
                   div(class = "input-block",
-                      numericInput("min_n_size", "Minimum N Size", value = 8)),
+                      numericInput("min_n_size", "Minimum N Size", value = cfg_get("min_n_size", 8))),
                   div(class = "input-block",
-                      numericInput("max_n_size", "Maximum N Size", value = 10)),
+                      numericInput("max_n_size", "Maximum N Size", value = cfg_get("max_n_size", 10))),
                   div(class = "input-block",
-                      numericInput("max_iterations", "Iterations per N Size", value = 100)),
+                      numericInput("max_iterations", "Iterations per N Size", value = cfg_get("max_iterations", 100))),
                   div(class = "input-block",
-                      textInput("mandatory_vars", "Mandatory Variable Columns (comma-separated)", value = "5,7")),
+                      textInput("mandatory_vars", "Mandatory Variable Columns (comma-separated)", value = cfg_get("mandatory_vars", "5,7"))),
                   div(class = "input-block",
-                      textInput("output_filename", "Output Filename", value = "combinations_output.csv"))
+                      textInput("output_filename", "Output Filename", value = cfg_get("output_filename", "combinations_output.csv")))
               ),
               div(class = "metrics-toggle-panel",
                   h5("Optional metric enrichments"),
                   p(class = "text-muted", "Select the metric suites to append during combination generation."),
                   div(class = "toggle-row",
-                      checkboxInput("include_fa", "Include Factor Analysis Metrics", value = FALSE),
-                      checkboxInput("include_corr", "Include Pearson Correlation Metrics", value = FALSE)
+                      checkboxInput("include_fa", "Include Factor Analysis Metrics", value = isTRUE(cfg_get("include_fa", FALSE))),
+                      checkboxInput("include_corr", "Include Pearson Correlation Metrics", value = isTRUE(cfg_get("include_corr", FALSE)))
                   )
               ),
               div(class = "custom-iterations-panel",
@@ -501,8 +539,11 @@ ui <- dashboardPage(
                 div(class = "input-block",
                     textInput("file_name", "Enter starting text for ITRs", placeholder = "TEVA_ITR_")),
                 div(class = "input-block",
-                    textInput("output_directiory", "Output Directory",
-                              value = "C:/Users/gs36325/Documents/22 Saphnelo Segmentation/09 Iterator Final/AAKASH V2")),
+                    textInput(
+                      "output_directiory",
+                      "Output Directory",
+                      value = iterator_paths$output_directory %||% getwd()
+                    )),
                 div(class = "input-block",
                     numericInput("num_segments", "# of Segments", value = 4, min = 1, max = 10))
             ),
@@ -534,7 +575,7 @@ ui <- dashboardPage(
                 div(class = "input-block upload-block",
                     fileInput("summary_workbook", "Upload workbook (SUMMARY_GENERATOR tab)", accept = ".xlsx")),
                 div(class = "input-block",
-                    textInput("summary_output_dir", "Output directory", value = getwd())),
+                    textInput("summary_output_dir", "Output directory", value = iterator_paths$summary_directory %||% getwd())),
                 div(class = "input-block",
                     textInput("summary_output_name", "Output file name", value = "summary_output.txt"))
             ),
@@ -574,9 +615,9 @@ ui <- dashboardPage(
                 div(class = "input-block upload-block",
                     fileInput("ai_context_file", "Upload context prompt (.txt)", accept = c(".txt"))),
                 div(class = "input-block",
-                    selectInput("ai_provider", "LLM provider", choices = c("openai", "groq", "gemini"), selected = "openai")),
+                    selectInput("ai_provider", "LLM provider", choices = c("openai", "groq", "gemini"), selected = cfg_get("ai_provider", "openai"))),
                 div(class = "input-block",
-                    textInput("ai_model", "Model name", value = llm_default_models()[["openai"]])),
+                    textInput("ai_model", "Model name", value = cfg_get("ai_model", llm_default_models()[["openai"]]))),
                 div(class = "input-block",
                     sliderInput("ai_temperature", "Temperature", min = 0, max = 1, value = 0.2, step = 0.05)),
                 div(class = "input-block",
@@ -630,11 +671,11 @@ ui <- dashboardPage(
                 div(class = "input-block upload-block",
                     fileInput("bulk_context_prompt", "Optional context prompt (.txt)", accept = c(".txt"))),
                 div(class = "input-block",
-                    textInput("bulk_output_dir", "AI output directory", value = file.path(getwd(), "AI_OUTPUT"))),
+                    textInput("bulk_output_dir", "AI output directory", value = iterator_paths$summary_directory %||% file.path(getwd(), "AI_OUTPUT"))),
                 div(class = "input-block",
-                    selectInput("bulk_llm_provider", "LLM provider", choices = c("openai", "groq", "gemini"), selected = "openai")),
+                    selectInput("bulk_llm_provider", "LLM provider", choices = c("openai", "groq", "gemini"), selected = cfg_get("ai_provider", "openai"))),
                 div(class = "input-block",
-                    textInput("bulk_llm_model", "Model name", value = llm_default_models()[["openai"]])),
+                    textInput("bulk_llm_model", "Model name", value = cfg_get("ai_model", llm_default_models()[["openai"]]))),
                 div(class = "input-block",
                     sliderInput("bulk_llm_temperature", "Temperature", min = 0, max = 1, value = 0.2, step = 0.05)),
                 div(class = "input-block",
@@ -2718,18 +2759,18 @@ write_manual_summary_workbook <- function(summary_path, metrics_table, var_table
     }
 
     tryCatch({
-      generate_best_combinations(
-        data = data_path,
-        min_n_size = min_n_size,
-        max_n_size = max_n_size,
-        max_iterations = default_iterations,
-        mandatory_variables_cols = mandatory_vars,
-        output_file = file.path(DIRECTORY_PATH, output_file_name),
-        append_log = append_log,
-        progress_cb = progress_cb,
-        plan_summary = plan_details,
-        include_fa = include_fa,
-        include_corr = include_corr
+        generate_best_combinations(
+          data = data_path,
+          min_n_size = min_n_size,
+          max_n_size = max_n_size,
+          max_iterations = default_iterations,
+          mandatory_variables_cols = mandatory_vars,
+          output_file = file.path(output_root, output_file_name),
+          append_log = append_log,
+          progress_cb = progress_cb,
+          plan_summary = plan_details,
+          include_fa = include_fa,
+          include_corr = include_corr
       )
       shinyWidgets::updateProgressBar(session, "progressBarModal", value = 100)
       shinyjs::html("progressTextModal", "Finalizing output...")
