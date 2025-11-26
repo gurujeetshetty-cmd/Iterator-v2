@@ -6,6 +6,21 @@ RULES_Checker <- function(path, xTABS_name, solo) {
   print("SQC-initial")
   setwd(path)
 
+  iterator_config <- getOption("iterator.config", default = list())
+  cfg_num <- function(name, default) {
+    val <- iterator_config[[name]]
+    if (is.null(val) || !length(val)) return(default)
+    val_num <- suppressWarnings(as.numeric(val[[1]]))
+    if (is.na(val_num)) default else val_num
+  }
+
+  bimodality_hi_threshold <- cfg_num("bimodality_hi_threshold", 110)
+  bimodality_low_threshold <- cfg_num("bimodality_low_threshold", 0.2)
+  performance_hi_threshold <- cfg_num("performance_hi_threshold", 120)
+  performance_lo_threshold <- cfg_num("performance_lo_threshold", 80)
+  performance_base_threshold <- cfg_num("performance_base_threshold", 0.2)
+  independence_base_threshold <- cfg_num("independence_base_threshold", performance_base_threshold)
+
   # ============================================================
   # 🧹 Safe data cleaner — removes illegal characters, converts list → string, trims
   # ============================================================
@@ -182,13 +197,14 @@ for(j in 1:seg_n){
         bi<-0; perf<-0; indT<-0; indB<-0
         A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row))), ]
         C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row))), ]
-        if((as.numeric(A_row[3+seg_n+j])>110)&&(as.numeric(C_row[3+seg_n+j])>110)&&(as.numeric(A_row[1+j])>0.2)&&(as.numeric(C_row[1+j])>0.2)){bi<-1}
-        if(((as.numeric(A_row[3+seg_n+j])>120)&&(as.numeric(C_row[3+seg_n+j])<80)&&(as.numeric(A_row[2+seg_n])>0.2))||
-           ((as.numeric(A_row[3+seg_n+j])<80)&&(as.numeric(C_row[3+seg_n+j])>120)&&(as.numeric(C_row[2+seg_n])>0.2))){perf<-1}
-        if(((as.numeric(A_row[3+seg_n+j])>120)&&(as.numeric(A_row[2+seg_n])>0.2))||
-           ((as.numeric(C_row[3+seg_n+j])>120)&&(as.numeric(C_row[2+seg_n])>0.2))){if(bi!=1){indT<-1}}
-        if(((as.numeric(A_row[3+seg_n+j])<80)&&(as.numeric(A_row[2+seg_n])>0.2))||
-           ((as.numeric(C_row[3+seg_n+j])<80)&&(as.numeric(C_row[2+seg_n])>0.2))){if(bi!=1){indB<-1}}
+        if((as.numeric(A_row[3+seg_n+j])>bimodality_hi_threshold)&&(as.numeric(C_row[3+seg_n+j])>bimodality_hi_threshold)&&
+           (as.numeric(A_row[1+j])>bimodality_low_threshold)&&(as.numeric(C_row[1+j])>bimodality_low_threshold)){bi<-1}
+        if(((as.numeric(A_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(C_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(A_row[2+seg_n])>performance_base_threshold))||
+           ((as.numeric(A_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(C_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(C_row[2+seg_n])>performance_base_threshold))){perf<-1}
+        if(((as.numeric(A_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(A_row[2+seg_n])>independence_base_threshold))||
+           ((as.numeric(C_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(C_row[2+seg_n])>independence_base_threshold))){if(bi!=1){indT<-1}}
+        if(((as.numeric(A_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(A_row[2+seg_n])>independence_base_threshold))||
+           ((as.numeric(C_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(C_row[2+seg_n])>independence_base_threshold))){if(bi!=1){indB<-1}}
 
         assign(paste0("bi_",j),get(paste0("bi_",j))+bi)
         assign(paste0("perf_",j),get(paste0("perf_",j))+perf)
@@ -323,7 +339,8 @@ for(i in 1:length(tables_cleaned)){
         d1<-tables_cleaned[[i]]
         A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row))), ]
         C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row))), ]
-        if((as.numeric(A_row[3+seg_n+j])>110)&&(as.numeric(C_row[3+seg_n+j])>110)&&(as.numeric(A_row[1+j])>0.2)&&(as.numeric(C_row[1+j])>0.2)){
+        if((as.numeric(A_row[3+seg_n+j])>bimodality_hi_threshold)&&(as.numeric(C_row[3+seg_n+j])>bimodality_hi_threshold)&&
+           (as.numeric(A_row[1+j])>bimodality_low_threshold)&&(as.numeric(C_row[1+j])>bimodality_low_threshold)){
            bi_n<-bi_n+1
            break}
         }
@@ -363,7 +380,8 @@ if (length(tables_cleaned_input) == 0) {
       # Skip if any conversion failed
       if (any(is.na(c(A_hi, C_hi, A_lo, C_lo)))) next
 
-      if ((A_hi > 110) && (C_hi > 110) && (A_lo > 0.2) && (C_lo > 0.2)) {
+      if ((A_hi > bimodality_hi_threshold) && (C_hi > bimodality_hi_threshold) &&
+          (A_lo > bimodality_low_threshold) && (C_lo > bimodality_low_threshold)) {
         bi_n_input <- bi_n_input + 1
         break
       }
@@ -404,8 +422,8 @@ if (length(tables_cleaned_input) > 0) {
       A_base <- as.numeric(A_row[2+seg_n])
       C_base <- as.numeric(C_row[2+seg_n])
       if (!any(is.na(c(A_hi, C_hi, A_base, C_base)))) {
-        if (((A_hi > 120 && C_hi < 80 && A_base > 0.2) ||
-             (A_hi < 80 && C_hi > 120 && C_base > 0.2))) {
+        if (((A_hi > performance_hi_threshold && C_hi < performance_lo_threshold && A_base > performance_base_threshold) ||
+             (A_hi < performance_lo_threshold && C_hi > performance_hi_threshold && C_base > performance_base_threshold))) {
           covered <- TRUE
           perf_count <- perf_count + 1
         }
