@@ -418,7 +418,7 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
     segment_values[[seg]] <- select_rating_phrase(metrics, meta_row$variable_type)
   }
 
-  # Second pass: construct narratives with other-segment averages available
+  # Second pass: construct narratives with overall metrics available
   for (seg in segments) {
     phrase_info <- segment_values[[seg]]
 
@@ -428,30 +428,45 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
     }
 
     question_text <- affix_question(meta_row$question_prefix, meta_row$answer_description, include_prefix = TRUE)
-    comparison_label <- if (toupper(meta_row$variable_type) == "RATING7" && phrase_info$metric_type == "top3") "overall avg (top3)" else "overall avg"
 
-    other_values <- vapply(setdiff(segments, seg), function(s) segment_values[[s]]$metric_value, numeric(1))
-    other_avg <- if (length(other_values) && any(!is.na(other_values))) mean(other_values, na.rm = TRUE) else NA_real_
+    # Select the right overall comparison metric based on whether we are discussing agreement or disagreement.
+    overall_value <- NA_real_
+    comparison_label <- "overall avg"
+    if (identical(phrase_info$metric_type, "bottom")) {
+      if (toupper(meta_row$variable_type) == "RATING7" && is.na(overall_metrics$bottom2) && !is.na(overall_metrics$bottom3)) {
+        overall_value <- overall_metrics$bottom3
+        comparison_label <- "overall avg disagreement (bottom3)"
+      } else {
+        overall_value <- overall_metrics$bottom2
+        comparison_label <- "overall avg disagreement"
+      }
+    } else if (identical(phrase_info$metric_type, "top3")) {
+      overall_value <- overall_metrics$top3
+      comparison_label <- "overall avg (top3)"
+    } else {
+      overall_value <- overall_metrics$top2
+    }
 
     if (identical(phrase_info$variant, "bimodal")) {
       statement <- sprintf(
-        "Segment %s shows a bimodal split with statement %s (agreeing: %s, disagreeing: %s) compared to other segments (%s %s)",
+        "Segment %s shows a bimodal split with statement %s (agreeing: %s, disagreeing: %s) compared to %s (agreeing: %s, disagreeing: %s)",
         seg,
         question_text,
         format_percent(phrase_info$metric_value),
         format_percent(phrase_info$secondary_value),
         comparison_label,
-        if (!is.na(other_avg)) format_percent(other_avg) else "N/A"
+        if (!is.na(overall_value)) format_percent(overall_value) else "N/A",
+        if (!is.na(overall_metrics$bottom2)) format_percent(overall_metrics$bottom2) else if (!is.na(overall_metrics$bottom3)) format_percent(overall_metrics$bottom3) else "N/A"
       )
     } else {
       statement <- sprintf(
-        "Segment %s has %s (%s) with statement %s compared to other segments (%s %s)",
+        "Segment %s has %s (%s) with statement %s compared to %s (%s)",
         seg,
         phrase_info$phrase,
         format_percent(phrase_info$metric_value),
         question_text,
         comparison_label,
-        if (!is.na(other_avg)) format_percent(other_avg) else "N/A"
+        if (!is.na(overall_value)) format_percent(overall_value) else "N/A"
       )
     }
 
@@ -760,10 +775,30 @@ build_all_narratives <- function(parsed) {
 
     if (type == "RATING7") {
       overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$WEIGHTS, meta_row$variable_type)
-      var_narratives <- build_rating_narratives(data, meta_row, segments, list(top2 = overall_values$t2b, top3 = overall_values$t3b))
+      var_narratives <- build_rating_narratives(
+        data,
+        meta_row,
+        segments,
+        list(
+          top2 = overall_values$t2b,
+          top3 = overall_values$t3b,
+          bottom2 = overall_values$b2b,
+          bottom3 = overall_values$b3b
+        )
+      )
     } else if (type == "RATING5") {
       overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$WEIGHTS, meta_row$variable_type)
-      var_narratives <- build_rating_narratives(data, meta_row, segments, list(top2 = overall_values$t2b, top3 = NA_real_))
+      var_narratives <- build_rating_narratives(
+        data,
+        meta_row,
+        segments,
+        list(
+          top2 = overall_values$t2b,
+          top3 = NA_real_,
+          bottom2 = overall_values$b2b,
+          bottom3 = NA_real_
+        )
+      )
     } else if (type == "SINGLESELECT") {
       overall_mode <- calculate_mode_share(data[[meta_row$variable_id]], data$WEIGHTS)
       var_narratives <- build_singleselect_narratives(data, meta_row, segments, overall_mode$share)
@@ -799,6 +834,18 @@ build_all_narratives <- function(parsed) {
       }
       seg_bucket <- c(seg_bucket, var_narratives[[seg]])
       narratives_by_segment[[seg]][[theme_label]] <- seg_bucket
+    }
+  }
+
+  # Add explicit messages when no differentiating metrics exist for a theme/segment pair.
+  candidate_themes <- unique(meta$normalized_theme[!is_not_clear_theme(meta$theme)])
+  for (seg in segments) {
+    for (theme_label in candidate_themes) {
+      allowed_vars <- differentiators[[seg]][[theme_label]]
+      existing <- narratives_by_segment[[seg]][[theme_label]]
+      if ((is.null(existing) || !length(existing)) && (is.null(allowed_vars) || !length(allowed_vars))) {
+        narratives_by_segment[[seg]][[theme_label]] <- sprintf("No differentiating metrics for theme '%s'.", theme_label)
+      }
     }
   }
 
