@@ -462,14 +462,21 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
         if (!is.na(overall_metrics$bottom2)) format_percent(overall_metrics$bottom2) else if (!is.na(overall_metrics$bottom3)) format_percent(overall_metrics$bottom3) else "N/A"
       )
     } else {
+      comparison_text <- ""
+      if (!is.na(overall_value)) {
+        gap <- abs(phrase_info$metric_value - overall_value)
+        if (!is.na(gap) && gap >= MIN_DIFFERENTIATION_GAP) {
+          comparison_text <- sprintf(" compared to %s (%s)", comparison_label, format_percent(overall_value))
+        }
+      }
+
       statement <- sprintf(
-        "Segment %s has %s (%s) with statement %s compared to %s (%s)",
+        "Segment %s has %s (%s) with statement %s%s",
         seg,
         phrase_info$phrase,
         format_percent(phrase_info$metric_value),
         question_text,
-        comparison_label,
-        if (!is.na(overall_value)) format_percent(overall_value) else "N/A"
+        comparison_text
       )
     }
 
