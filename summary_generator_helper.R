@@ -138,70 +138,59 @@ calculate_prebucketed_rating_metrics <- function(values, weights, type) {
 }
 
 # ---- Box score calculations ----
-calculate_box_shares <- function(values, weights, top_values, bottom_values = NULL) {
-  values <- safe_numeric(values)
-  weights <- safe_numeric(weights)
-  valid <- !is.na(values) & !is.na(weights)
-  if (!any(valid)) {
-    return(list(top = 0, bottom = 0))
-  }
-  total_w <- sum(weights[valid])
-  top_share <- if (length(top_values)) sum(weights[valid & values %in% top_values]) / total_w * 100 else 0
-  bottom_share <- if (length(bottom_values)) sum(weights[valid & values %in% bottom_values]) / total_w * 100 else 0
-  list(top = top_share, bottom = bottom_share)
-}
-
 calculate_rating_metrics <- function(values, weights, type) {
-  if (is_prebucketed_rating(values)) {
-    return(calculate_prebucketed_rating_metrics(values, weights, type))
+  if (!is_prebucketed_rating(values)) {
+    warning("Rating metrics require pre-bucketed A_T/B_M/C_B inputs; raw ratings are not supported.")
+    return(list(t2b = NA_real_, b2b = NA_real_, t3b = NA_real_, b3b = NA_real_))
   }
 
-  values <- safe_numeric(values)
-  weights <- safe_numeric(weights)
-  if (toupper(type) == "RATING7") {
-    t2b <- calculate_box_shares(values, weights, c(6, 7), c(1, 2))
-    t3b <- calculate_box_shares(values, weights, c(5, 6, 7), c(1, 2, 3))
-    list(t2b = t2b$top, b2b = t2b$bottom, t3b = t3b$top, b3b = t3b$bottom)
-  } else {
-    t2b <- calculate_box_shares(values, weights, c(4, 5), c(1, 2))
-    list(t2b = t2b$top, b2b = t2b$bottom, t3b = NA_real_, b3b = NA_real_)
-  }
+  calculate_prebucketed_rating_metrics(values, weights, type)
 }
 
 select_rating_phrase <- function(metrics, type) {
-  eval_phrase <- function(top_share, bottom_share) {
-    gap <- top_share - bottom_share
-    top_directional <- !is.na(top_share) && top_share >= MIN_MEANINGFUL_SHARE && (is.na(bottom_share) || gap >= MIN_DIRECTIONAL_GAP)
-    bottom_directional <- !is.na(bottom_share) && bottom_share >= MIN_MEANINGFUL_SHARE && (is.na(top_share) || -gap >= MIN_DIRECTIONAL_GAP)
+  # Prefer the narrow boxes (top2/bottom2); fall back to top3/bottom3 for 7-pt scales when needed
+  top_share <- metrics$t2b
+  bottom_share <- metrics$b2b
+  metric_label <- "top2"
 
-    if (top_directional && top_share >= 70) {
-      return(list(phrase = "strongly agrees that", metric_value = top_share, metric_type = "top", skip = FALSE))
-    }
-    if (top_directional && top_share >= 50) {
-      return(list(phrase = "somewhat agrees that", metric_value = top_share, metric_type = "top", skip = FALSE))
-    }
-    if (bottom_directional && bottom_share >= 50) {
-      return(list(phrase = "strongly disagrees that", metric_value = bottom_share, metric_type = "bottom", skip = FALSE))
-    }
-    if (bottom_directional && bottom_share >= 30) {
-      return(list(phrase = "somewhat disagrees that", metric_value = bottom_share, metric_type = "bottom", skip = FALSE))
-    }
-    if (!is.na(top_share) && !is.na(bottom_share) && top_share >= MIN_MEANINGFUL_SHARE && bottom_share >= MIN_MEANINGFUL_SHARE && abs(gap) < MIN_DIRECTIONAL_GAP) {
-      return(list(phrase = "is divided on whether", metric_value = top_share, metric_type = "top", skip = FALSE))
-    }
-    list(phrase = "is uncertain about whether", metric_value = top_share, metric_type = "top", skip = TRUE)
+  if (toupper(type) == "RATING7" && is.na(top_share) && !is.na(metrics$t3b)) {
+    top_share <- metrics$t3b
+    metric_label <- "top3"
+  }
+  if (toupper(type) == "RATING7" && is.na(bottom_share) && !is.na(metrics$b3b)) {
+    bottom_share <- metrics$b3b
   }
 
-  first_pass <- eval_phrase(metrics$t2b, metrics$b2b)
-  if (toupper(type) == "RATING7" && identical(first_pass$phrase, "is uncertain about whether")) {
-    fallback <- eval_phrase(metrics$t3b, metrics$b3b)
-    fallback$metric_type <- "top3"
-    fallback$used_fallback <- TRUE
-    return(fallback)
+  gap <- top_share - bottom_share
+  top_meaningful <- !is.na(top_share) && top_share >= MIN_MEANINGFUL_SHARE
+  bottom_meaningful <- !is.na(bottom_share) && bottom_share >= MIN_MEANINGFUL_SHARE
+
+  # Bimodal: both ends have meaningful share and the gap between them is small
+  if (top_meaningful && bottom_meaningful && abs(gap) < MIN_DIRECTIONAL_GAP) {
+    return(list(
+      phrase = "bimodal split",
+      metric_value = top_share,
+      secondary_value = bottom_share,
+      metric_type = metric_label,
+      skip = FALSE,
+      variant = "bimodal"
+    ))
   }
-  first_pass$used_fallback <- FALSE
-  first_pass$metric_type <- ifelse(first_pass$metric_type == "top", "top2", first_pass$metric_type)
-  first_pass
+
+  if (top_meaningful && top_share >= 70) {
+    return(list(phrase = "strong agreement", metric_value = top_share, metric_type = metric_label, skip = FALSE, variant = "directional"))
+  }
+  if (top_meaningful && top_share >= 50) {
+    return(list(phrase = "somewhat agreement", metric_value = top_share, metric_type = metric_label, skip = FALSE, variant = "directional"))
+  }
+  if (bottom_meaningful && bottom_share >= 70) {
+    return(list(phrase = "strong disagreement", metric_value = bottom_share, metric_type = "bottom", skip = FALSE, variant = "directional"))
+  }
+  if (bottom_meaningful && bottom_share >= 50) {
+    return(list(phrase = "somewhat disagreement", metric_value = bottom_share, metric_type = "bottom", skip = FALSE, variant = "directional"))
+  }
+
+  list(phrase = "", metric_value = NA_real_, metric_type = metric_label, skip = TRUE, variant = "unclear")
 }
 
 parse_dual_statements <- function(answer_description) {
@@ -420,31 +409,52 @@ affix_question <- function(prefix, description, include_prefix = TRUE) {
 
 build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
   narratives <- list()
-  segment_metrics <- list()
+  segment_values <- list()
 
+  # First pass: collect phrase info for each segment
   for (seg in segments) {
     seg_data <- data[data$SEGM == seg, ]
     metrics <- calculate_rating_metrics(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS, meta_row$variable_type)
-    phrase_info <- select_rating_phrase(metrics, meta_row$variable_type)
+    segment_values[[seg]] <- select_rating_phrase(metrics, meta_row$variable_type)
+  }
+
+  # Second pass: construct narratives with other-segment averages available
+  for (seg in segments) {
+    phrase_info <- segment_values[[seg]]
 
     if (isTRUE(phrase_info$skip)) {
-      segment_metrics[[seg]] <- NA_real_
       narratives[[seg]] <- list(statement = character(0), metric_type = phrase_info$metric_type)
       next
     }
 
-    display_value <- if (phrase_info$metric_type %in% c("top", "top2")) metrics$t2b else metrics$b2b
-    display_value <- if (phrase_info$metric_type == "top3") metrics$t3b else display_value
-    comparison_value <- if (phrase_info$metric_type == "top3") metrics$t3b else metrics$t2b
-    segment_metrics[[seg]] <- comparison_value
+    question_text <- affix_question(meta_row$question_prefix, meta_row$answer_description, include_prefix = TRUE)
+    comparison_label <- if (toupper(meta_row$variable_type) == "RATING7" && phrase_info$metric_type == "top3") "overall avg (top3)" else "overall avg"
 
-    statement <- sprintf(
-      "Segment %s %s %s (%s)",
-      seg,
-      phrase_info$phrase,
-      affix_question(meta_row$question_prefix, meta_row$answer_description, include_prefix = TRUE),
-      format_percent(display_value)
-    )
+    other_values <- vapply(setdiff(segments, seg), function(s) segment_values[[s]]$metric_value, numeric(1))
+    other_avg <- if (length(other_values) && any(!is.na(other_values))) mean(other_values, na.rm = TRUE) else NA_real_
+
+    if (identical(phrase_info$variant, "bimodal")) {
+      statement <- sprintf(
+        "Segment %s shows a bimodal split with statement %s (agreeing: %s, disagreeing: %s) compared to other segments (%s %s)",
+        seg,
+        question_text,
+        format_percent(phrase_info$metric_value),
+        format_percent(phrase_info$secondary_value),
+        comparison_label,
+        if (!is.na(other_avg)) format_percent(other_avg) else "N/A"
+      )
+    } else {
+      statement <- sprintf(
+        "Segment %s has %s (%s) with statement %s compared to other segments (%s %s)",
+        seg,
+        phrase_info$phrase,
+        format_percent(phrase_info$metric_value),
+        question_text,
+        comparison_label,
+        if (!is.na(other_avg)) format_percent(other_avg) else "N/A"
+      )
+    }
+
     narratives[[seg]] <- list(statement = statement, metric_type = phrase_info$metric_type)
   }
 
@@ -454,10 +464,7 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
       result[[seg]] <- character(0)
       next
     }
-    metric_type <- narratives[[seg]]$metric_type
-    overall_metric <- if (metric_type == "top3") overall_metrics$top3 else overall_metrics$top2
-    cross <- cross_segment_phrase(seg, segment_metrics, overall_metric)
-    result[[seg]] <- paste0(narratives[[seg]]$statement, cross, ".")
+    result[[seg]] <- paste0(narratives[[seg]]$statement, ".")
   }
   result
 }
