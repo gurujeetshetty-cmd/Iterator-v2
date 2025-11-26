@@ -21,7 +21,7 @@ clean_variable_ids <- function(ids) {
 }
 
 clean_variable_types <- function(types) {
-  allowed <- c("RATING7", "RATING5", "SINGLESELECT", "MULTISELECT", "NUMERIC", "RANKING")
+  allowed <- c("RATING7", "RATING5", "RATING_DUAL", "SINGLESELECT", "MULTISELECT", "NUMERIC", "RANKING")
   normalized <- toupper(trimws(as.character(types)))
   normalized <- gsub("\\s+", "", normalized)
   normalized[normalized %in% c("LIKERT7", "RATING_7", "RATING07")] <- "RATING7"

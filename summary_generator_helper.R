@@ -45,6 +45,11 @@ safe_numeric <- function(x) {
   vals
 }
 
+MIN_DIRECTIONAL_GAP <- 10
+MIN_MEANINGFUL_SHARE <- 15
+MIN_DIFFERENTIATION_GAP <- 5
+TOP_DIFFERENTIATOR_COUNT <- 5
+
 weighted_mean_safe <- function(x, w) {
   x <- safe_numeric(x)
   w <- safe_numeric(w)
@@ -79,6 +84,59 @@ compute_segment_percentages <- function(data, seg_col = "SEGM", weight_col = "WE
   data.frame(segment = names(totals), percent = perc, stringsAsFactors = FALSE)
 }
 
+# ---- Bucket parsing helpers ----
+is_prebucketed_rating <- function(values, pattern = "^[A-C]_[TMB]") {
+  vals <- as.character(values)
+  any(grepl(pattern, vals, ignore.case = TRUE), na.rm = TRUE)
+}
+
+parse_rating_bucket <- function(values) {
+  vals <- as.character(values)
+  bucket <- rep(NA_character_, length(vals))
+  bucket[grepl("^A_T", vals, ignore.case = TRUE)] <- "top"
+  bucket[grepl("^B_M", vals, ignore.case = TRUE)] <- "middle"
+  bucket[grepl("^C_B", vals, ignore.case = TRUE)] <- "bottom"
+  bucket
+}
+
+count_bucket_span <- function(values, prefix) {
+  vals <- as.character(values)
+  codes <- vals[grepl(paste0("^", prefix), vals, ignore.case = TRUE) & nzchar(vals)]
+  if (!length(codes)) {
+    return(0L)
+  }
+  digits <- gsub("^.{3}", "", unique(codes))
+  digit_chars <- unlist(strsplit(paste(digits, collapse = ""), ""))
+  length(unique(digit_chars[grepl("[0-9]", digit_chars)]))
+}
+
+calculate_prebucketed_rating_metrics <- function(values, weights, type) {
+  weights <- safe_numeric(weights)
+  buckets <- parse_rating_bucket(values)
+  valid <- !is.na(buckets) & !is.na(weights)
+  if (!any(valid)) {
+    return(list(t2b = NA_real_, b2b = NA_real_, t3b = NA_real_, b3b = NA_real_))
+  }
+  total_w <- sum(weights[valid])
+  share <- function(label) sum(weights[valid & buckets == label]) / total_w * 100
+  top_share <- share("top")
+  bottom_share <- share("bottom")
+
+  top_span <- count_bucket_span(values, "A_T")
+  bottom_span <- count_bucket_span(values, "C_B")
+
+  if (toupper(type) == "RATING7") {
+    list(
+      t2b = top_share,
+      b2b = bottom_share,
+      t3b = if (top_span >= 3) top_share else NA_real_,
+      b3b = if (bottom_span >= 3) bottom_share else NA_real_
+    )
+  } else {
+    list(t2b = top_share, b2b = bottom_share, t3b = NA_real_, b3b = NA_real_)
+  }
+}
+
 # ---- Box score calculations ----
 calculate_box_shares <- function(values, weights, top_values, bottom_values = NULL) {
   values <- safe_numeric(values)
@@ -94,6 +152,10 @@ calculate_box_shares <- function(values, weights, top_values, bottom_values = NU
 }
 
 calculate_rating_metrics <- function(values, weights, type) {
+  if (is_prebucketed_rating(values)) {
+    return(calculate_prebucketed_rating_metrics(values, weights, type))
+  }
+
   values <- safe_numeric(values)
   weights <- safe_numeric(weights)
   if (toupper(type) == "RATING7") {
@@ -108,22 +170,26 @@ calculate_rating_metrics <- function(values, weights, type) {
 
 select_rating_phrase <- function(metrics, type) {
   eval_phrase <- function(top_share, bottom_share) {
-    if (!is.na(top_share) && top_share >= 70) {
-      return(list(phrase = "strongly agrees that", metric_value = top_share, metric_type = "top"))
+    gap <- top_share - bottom_share
+    top_directional <- !is.na(top_share) && top_share >= MIN_MEANINGFUL_SHARE && (is.na(bottom_share) || gap >= MIN_DIRECTIONAL_GAP)
+    bottom_directional <- !is.na(bottom_share) && bottom_share >= MIN_MEANINGFUL_SHARE && (is.na(top_share) || -gap >= MIN_DIRECTIONAL_GAP)
+
+    if (top_directional && top_share >= 70) {
+      return(list(phrase = "strongly agrees that", metric_value = top_share, metric_type = "top", skip = FALSE))
     }
-    if (!is.na(top_share) && top_share >= 50) {
-      return(list(phrase = "somewhat agrees that", metric_value = top_share, metric_type = "top"))
+    if (top_directional && top_share >= 50) {
+      return(list(phrase = "somewhat agrees that", metric_value = top_share, metric_type = "top", skip = FALSE))
     }
-    if (!is.na(bottom_share) && bottom_share >= 50) {
-      return(list(phrase = "strongly disagrees that", metric_value = bottom_share, metric_type = "bottom"))
+    if (bottom_directional && bottom_share >= 50) {
+      return(list(phrase = "strongly disagrees that", metric_value = bottom_share, metric_type = "bottom", skip = FALSE))
     }
-    if (!is.na(bottom_share) && bottom_share >= 30) {
-      return(list(phrase = "somewhat disagrees that", metric_value = bottom_share, metric_type = "bottom"))
+    if (bottom_directional && bottom_share >= 30) {
+      return(list(phrase = "somewhat disagrees that", metric_value = bottom_share, metric_type = "bottom", skip = FALSE))
     }
-    if (!is.na(top_share) && !is.na(bottom_share) && top_share >= 30 && bottom_share >= 30) {
-      return(list(phrase = "is divided on whether", metric_value = top_share, metric_type = "top"))
+    if (!is.na(top_share) && !is.na(bottom_share) && top_share >= MIN_MEANINGFUL_SHARE && bottom_share >= MIN_MEANINGFUL_SHARE && abs(gap) < MIN_DIRECTIONAL_GAP) {
+      return(list(phrase = "is divided on whether", metric_value = top_share, metric_type = "top", skip = FALSE))
     }
-    list(phrase = "is uncertain about whether", metric_value = top_share, metric_type = "top")
+    list(phrase = "is uncertain about whether", metric_value = top_share, metric_type = "top", skip = TRUE)
   }
 
   first_pass <- eval_phrase(metrics$t2b, metrics$b2b)
@@ -136,6 +202,35 @@ select_rating_phrase <- function(metrics, type) {
   first_pass$used_fallback <- FALSE
   first_pass$metric_type <- ifelse(first_pass$metric_type == "top", "top2", first_pass$metric_type)
   first_pass
+}
+
+parse_dual_statements <- function(answer_description) {
+  right <- NA_character_
+  left <- NA_character_
+  if (!is.null(answer_description) && !is.na(answer_description)) {
+    lines <- unlist(strsplit(answer_description, "\n"))
+    right_line <- lines[grepl("^\\s*RIGHT:", lines, ignore.case = TRUE)]
+    left_line <- lines[grepl("^\\s*LEFT:", lines, ignore.case = TRUE)]
+    if (length(right_line)) right <- trimws(sub("^\\s*RIGHT:\\s*", "", right_line[1], ignore.case = TRUE))
+    if (length(left_line)) left <- trimws(sub("^\\s*LEFT:\\s*", "", left_line[1], ignore.case = TRUE))
+  }
+  list(right = right, left = left)
+}
+
+calculate_dual_metrics <- function(values, weights) {
+  weights <- safe_numeric(weights)
+  vals <- as.character(values)
+  valid <- !is.na(vals) & !is.na(weights)
+  if (!any(valid)) {
+    return(list(right = NA_real_, middle = NA_real_, left = NA_real_, net = NA_real_))
+  }
+  total <- sum(weights[valid])
+  share <- function(pattern) sum(weights[valid & grepl(pattern, vals, ignore.case = TRUE)]) / total * 100
+  right_share <- share("^A_R")
+  middle_share <- share("^B_M")
+  left_share <- share("^C_L")
+  net <- right_share - left_share
+  list(right = right_share, middle = middle_share, left = left_share, net = net)
 }
 
 # ---- Index and layer comparisons ----
@@ -251,6 +346,67 @@ calculate_selection_share <- function(values, weights, selected_value = 1) {
   sum(weights[valid & values == selected_value]) / total * 100
 }
 
+derive_metric_value <- function(data, meta_row, segment = NULL) {
+  subset_data <- if (is.null(segment)) data else data[data$SEGM == segment, , drop = FALSE]
+  type <- toupper(meta_row$variable_type)
+
+  if (type %in% c("RATING7", "RATING5")) {
+    metrics <- calculate_rating_metrics(subset_data[[meta_row$variable_id]], subset_data$WEIGHTS, type)
+    primary <- metrics$t2b
+    if (is.na(primary)) primary <- metrics$t3b
+    return(primary)
+  }
+  if (type == "RATING_DUAL") {
+    metrics <- calculate_dual_metrics(subset_data[[meta_row$variable_id]], subset_data$WEIGHTS)
+    return(metrics$net)
+  }
+  if (type == "SINGLESELECT") {
+    mode_info <- calculate_mode_share(subset_data[[meta_row$variable_id]], subset_data$WEIGHTS)
+    return(mode_info$share)
+  }
+  if (type == "MULTISELECT") {
+    return(calculate_selection_share(subset_data[[meta_row$variable_id]], subset_data$WEIGHTS, 1))
+  }
+  if (type == "NUMERIC") {
+    return(weighted_mean_safe(subset_data[[meta_row$variable_id]], subset_data$WEIGHTS))
+  }
+  if (type == "RANKING") {
+    values <- safe_numeric(subset_data[[meta_row$variable_id]])
+    weights <- safe_numeric(subset_data$WEIGHTS)
+    valid <- !is.na(values) & !is.na(weights)
+    total <- sum(weights[valid])
+    if (total <= 0) return(NA_real_)
+    return(sum(weights[valid & values == 1]) / total * 100)
+  }
+  NA_real_
+}
+
+compute_top_differentiators <- function(data, meta, segments, top_n = TOP_DIFFERENTIATOR_COUNT) {
+  theme_map <- setNames(lapply(segments, function(x) list()), segments)
+  meta$normalized_theme <- vapply(meta$theme, normalize_theme_label, character(1))
+
+  for (theme_label in unique(meta$normalized_theme)) {
+    theme_rows <- meta[meta$normalized_theme == theme_label, , drop = FALSE]
+    for (seg in segments) {
+      diff_frame <- data.frame(variable_id = character(0), diff = numeric(0), stringsAsFactors = FALSE)
+      for (i in seq_len(nrow(theme_rows))) {
+        row <- theme_rows[i, ]
+        overall_metric <- derive_metric_value(data, row)
+        seg_metric <- derive_metric_value(data, row, segment = seg)
+        gap <- abs(seg_metric - overall_metric)
+        if (is.na(gap) || gap < MIN_DIFFERENTIATION_GAP) {
+          gap <- -Inf
+        }
+        diff_frame <- rbind(diff_frame, data.frame(variable_id = row$variable_id, diff = gap, stringsAsFactors = FALSE))
+      }
+      diff_frame <- diff_frame[order(-diff_frame$diff), , drop = FALSE]
+      chosen <- head(diff_frame$variable_id[diff_frame$diff > -Inf], top_n)
+      theme_map[[seg]][[theme_label]] <- chosen
+    }
+  }
+  theme_map
+}
+
 # ---- Narrative builders ----
 
 affix_question <- function(prefix, description, include_prefix = TRUE) {
@@ -271,6 +427,12 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
     metrics <- calculate_rating_metrics(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS, meta_row$variable_type)
     phrase_info <- select_rating_phrase(metrics, meta_row$variable_type)
 
+    if (isTRUE(phrase_info$skip)) {
+      segment_metrics[[seg]] <- NA_real_
+      narratives[[seg]] <- list(statement = character(0), metric_type = phrase_info$metric_type)
+      next
+    }
+
     display_value <- if (phrase_info$metric_type %in% c("top", "top2")) metrics$t2b else metrics$b2b
     display_value <- if (phrase_info$metric_type == "top3") metrics$t3b else display_value
     comparison_value <- if (phrase_info$metric_type == "top3") metrics$t3b else metrics$t2b
@@ -288,9 +450,68 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
 
   result <- list()
   for (seg in segments) {
+    if (!length(narratives[[seg]]$statement)) {
+      result[[seg]] <- character(0)
+      next
+    }
     metric_type <- narratives[[seg]]$metric_type
     overall_metric <- if (metric_type == "top3") overall_metrics$top3 else overall_metrics$top2
     cross <- cross_segment_phrase(seg, segment_metrics, overall_metric)
+    result[[seg]] <- paste0(narratives[[seg]]$statement, cross, ".")
+  }
+  result
+}
+
+build_dual_narratives <- function(data, meta_row, segments, overall_metrics) {
+  narratives <- list()
+  segment_metrics <- list()
+  statements <- parse_dual_statements(meta_row$answer_description)
+  right_text <- ifelse(nzchar(statements$right), affix_question("", statements$right, include_prefix = FALSE), "the right-hand statement")
+  left_text <- ifelse(nzchar(statements$left), affix_question("", statements$left, include_prefix = FALSE), "the left-hand statement")
+
+  for (seg in segments) {
+    seg_data <- data[data$SEGM == seg, ]
+    metrics <- calculate_dual_metrics(seg_data[[meta_row$variable_id]], seg_data$WEIGHTS)
+    segment_metrics[[seg]] <- metrics$net
+
+    if (is.na(metrics$net) || (max(metrics$right, metrics$left, na.rm = TRUE) < MIN_MEANINGFUL_SHARE && abs(metrics$net) < MIN_DIRECTIONAL_GAP)) {
+      narratives[[seg]] <- list(statement = character(0), metric_type = "net_dual")
+      next
+    }
+
+    phrase <- "is divided between"
+    if (!is.na(metrics$net) && metrics$net >= 25 && metrics$right >= MIN_MEANINGFUL_SHARE) {
+      phrase <- sprintf("strongly prefers %s over", right_text)
+    } else if (!is.na(metrics$net) && metrics$net >= 10 && metrics$right >= MIN_MEANINGFUL_SHARE) {
+      phrase <- sprintf("leans toward %s over", right_text)
+    } else if (!is.na(metrics$net) && metrics$net <= -25 && metrics$left >= MIN_MEANINGFUL_SHARE) {
+      phrase <- sprintf("strongly prefers %s over", left_text)
+    } else if (!is.na(metrics$net) && metrics$net <= -10 && metrics$left >= MIN_MEANINGFUL_SHARE) {
+      phrase <- sprintf("leans toward %s over", left_text)
+    } else if (!is.na(metrics$net) && abs(metrics$net) < MIN_DIRECTIONAL_GAP) {
+      phrase <- "is divided between"
+    }
+
+    statement <- sprintf(
+      "Segment %s %s %s and %s (Right: %s, Left: %s, Net: %s)",
+      seg,
+      phrase,
+      right_text,
+      left_text,
+      format_percent(metrics$right),
+      format_percent(metrics$left),
+      format_percent(metrics$net)
+    )
+    narratives[[seg]] <- list(statement = statement, metric_type = "net_dual")
+  }
+
+  result <- list()
+  for (seg in segments) {
+    if (!length(narratives[[seg]]$statement)) {
+      result[[seg]] <- character(0)
+      next
+    }
+    cross <- cross_segment_phrase(seg, segment_metrics, overall_metrics$net, digits = 0, format_fn = format_percent)
     result[[seg]] <- paste0(narratives[[seg]]$statement, cross, ".")
   }
   result
@@ -500,7 +721,7 @@ parse_summary_input <- function(path) {
 }
 
 normalize_meta <- function(meta, use_input_flag = TRUE) {
-  allowed <- c("RATING7", "RATING5", "SINGLESELECT", "MULTISELECT", "NUMERIC", "RANKING")
+  allowed <- c("RATING7", "RATING5", "RATING_DUAL", "SINGLESELECT", "MULTISELECT", "NUMERIC", "RANKING")
   meta$variable_type <- clean_variable_types(meta$variable_type)
   meta <- meta[meta$variable_type %in% allowed, ]
   meta$input_flag <- tolower(trimws(meta$input_flag))
@@ -516,6 +737,9 @@ build_all_narratives <- function(parsed) {
   meta <- normalize_meta(parsed$metadata, use_input_flag = FALSE)
   segment_sizes <- compute_segment_percentages(data)
   segments <- segment_sizes$segment
+  meta$normalized_theme <- vapply(meta$theme, normalize_theme_label, character(1))
+  top_n <- getOption("narrative.top_differentiators", TOP_DIFFERENTIATOR_COUNT)
+  differentiators <- compute_top_differentiators(data, meta, segments, top_n)
   narratives_by_segment <- setNames(lapply(segments, function(x) list()), segments)
 
   for (i in seq_len(nrow(meta))) {
@@ -523,13 +747,15 @@ build_all_narratives <- function(parsed) {
     if (is_not_clear_theme(meta_row$theme)) {
       next
     }
-    theme_label <- normalize_theme_label(meta_row$theme)
-    overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$WEIGHTS, meta_row$variable_type)
+    theme_label <- meta_row$normalized_theme
+    overall_values <- NULL
     type <- meta_row$variable_type
 
     if (type == "RATING7") {
+      overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$WEIGHTS, meta_row$variable_type)
       var_narratives <- build_rating_narratives(data, meta_row, segments, list(top2 = overall_values$t2b, top3 = overall_values$t3b))
     } else if (type == "RATING5") {
+      overall_values <- calculate_rating_metrics(data[[meta_row$variable_id]], data$WEIGHTS, meta_row$variable_type)
       var_narratives <- build_rating_narratives(data, meta_row, segments, list(top2 = overall_values$t2b, top3 = NA_real_))
     } else if (type == "SINGLESELECT") {
       overall_mode <- calculate_mode_share(data[[meta_row$variable_id]], data$WEIGHTS)
@@ -548,11 +774,18 @@ build_all_narratives <- function(parsed) {
       total <- sum(weights[valid])
       overall_rank1 <- if (total > 0) sum(weights[valid & values == 1]) / total * 100 else 0
       var_narratives <- build_ranking_narratives(data, meta_row, segments, overall_rank1)
+    } else if (type == "RATING_DUAL") {
+      overall_dual <- calculate_dual_metrics(data[[meta_row$variable_id]], data$WEIGHTS)
+      var_narratives <- build_dual_narratives(data, meta_row, segments, overall_dual)
     } else {
       next
     }
 
     for (seg in segments) {
+      allowed_vars <- differentiators[[seg]][[theme_label]]
+      if (is.null(allowed_vars) || !meta_row$variable_id %in% allowed_vars) {
+        next
+      }
       seg_bucket <- narratives_by_segment[[seg]][[theme_label]]
       if (is.null(seg_bucket)) {
         seg_bucket <- character(0)
