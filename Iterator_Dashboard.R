@@ -26,8 +26,45 @@ utils::globalVariables(c(
 
 options(shiny.autoreload = TRUE)
 
+safe_named_get <- function(x, key) {
+  if (is.null(x) || !length(x)) {
+    return(NULL)
+  }
+
+  if (is.null(key) || !length(key)) {
+    return(NULL)
+  }
+
+  key <- key[1]
+
+  if (is.character(key)) {
+    nm <- names(x)
+    if (!is.null(nm) && key %in% nm) {
+      return(x[[key]])
+    }
+  }
+
+  idx <- suppressWarnings(as.integer(key))
+  if (!is.na(idx) && idx >= 1 && idx <= length(x)) {
+    return(x[[idx]])
+  }
+
+  NULL
+}
+
 # ---- Configuration bridge ----
 iterator_config <- getOption("iterator.config", default = list())
+
+normalize_if_exists <- function(path) {
+  tryCatch(normalizePath(path, winslash = "/", mustWork = FALSE), error = function(e) path)
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x)) return(y)
+  if (is.character(x) && !length(x)) return(y)
+  if (is.character(x) && !nzchar(x[1])) return(y)
+  x
+}
 
 # ---- Directory & Source ----
 cfg_get <- function(name, fallback = NULL, normalize = FALSE) {
@@ -54,43 +91,6 @@ get_script_path <- function() {
     return(NULL)
   }
   sub(file_arg, "", matches[[1]], fixed = TRUE)
-}
-
-normalize_if_exists <- function(path) {
-  tryCatch(normalizePath(path, winslash = "/", mustWork = FALSE), error = function(e) path)
-}
-
-`%||%` <- function(x, y) {
-  if (is.null(x)) return(y)
-  if (is.character(x) && !length(x)) return(y)
-  if (is.character(x) && !nzchar(x[1])) return(y)
-  x
-}
-
-safe_named_get <- function(x, key) {
-  if (is.null(x) || !length(x)) {
-    return(NULL)
-  }
-
-  if (is.null(key) || !length(key)) {
-    return(NULL)
-  }
-
-  key <- key[1]
-
-  if (is.character(key)) {
-    nm <- names(x)
-    if (!is.null(nm) && key %in% nm) {
-      return(x[[key]])
-    }
-  }
-
-  idx <- suppressWarnings(as.integer(key))
-  if (!is.na(idx) && idx >= 1 && idx <= length(x)) {
-    return(x[[idx]])
-  }
-
-  NULL
 }
 
 iterator_paths <- list(
