@@ -29,14 +29,17 @@ normalize_theme_label <- function(theme_label, fallback = "General Insights") {
 }
 
 is_not_clear_theme <- function(theme_label) {
-  if (is.null(theme_label) || all(is.na(theme_label))) {
+  if (is.null(theme_label)) {
     return(FALSE)
   }
-  label <- trimws(as.character(theme_label))
-  if (!nzchar(label)) {
+
+  labels <- trimws(as.character(theme_label))
+  labels[is.na(labels)] <- ""
+  if (!length(labels)) {
     return(FALSE)
   }
-  grepl("not\\s*clear", label, ignore.case = TRUE)
+
+  nzchar(labels) & grepl("not\\s*clear", labels, ignore.case = TRUE)
 }
 
 safe_numeric <- function(x) {
