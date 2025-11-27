@@ -385,15 +385,40 @@ compute_top_differentiators <- function(data, meta, segments, top_n = TOP_DIFFER
         row <- theme_rows[i, ]
         overall_metric <- derive_metric_value(data, row)
         seg_metric <- derive_metric_value(data, row, segment = seg)
-        gap <- abs(seg_metric - overall_metric)
-        if (is.na(gap) || gap < MIN_DIFFERENTIATION_GAP) {
-          gap <- -Inf
+        gap <- seg_metric - overall_metric
+        abs_gap <- abs(gap)
+        if (is.na(abs_gap) || abs_gap < MIN_DIFFERENTIATION_GAP) {
+          abs_gap <- -Inf
         }
-        diff_frame <- rbind(diff_frame, data.frame(variable_id = row$variable_id, diff = gap, stringsAsFactors = FALSE))
+        diff_frame <- rbind(
+          diff_frame,
+          data.frame(variable_id = row$variable_id, diff = gap, abs_diff = abs_gap, stringsAsFactors = FALSE)
+        )
       }
-      diff_frame <- diff_frame[order(-diff_frame$diff), , drop = FALSE]
-      chosen <- head(diff_frame$variable_id[diff_frame$diff > -Inf], top_n)
-      theme_map[[seg]][[theme_label]] <- chosen
+      meaningful <- diff_frame[diff_frame$abs_diff > -Inf, , drop = FALSE]
+
+      if (!nrow(meaningful)) {
+        theme_map[[seg]][[theme_label]] <- character(0)
+        next
+      }
+
+      meaningful <- meaningful[order(-meaningful$abs_diff), , drop = FALSE]
+      pos <- meaningful[meaningful$diff > 0, , drop = FALSE]
+      neg <- meaningful[meaningful$diff < 0, , drop = FALSE]
+
+      pos <- pos[order(-pos$abs_diff), , drop = FALSE]
+      neg <- neg[order(-neg$abs_diff), , drop = FALSE]
+
+      selected <- character(0)
+      if (nrow(pos)) selected <- c(selected, pos$variable_id[1])
+      if (nrow(neg) && length(selected) < top_n) selected <- c(selected, neg$variable_id[1])
+
+      remaining <- meaningful$variable_id[!meaningful$variable_id %in% selected]
+      if (length(remaining) && length(selected) < top_n) {
+        selected <- c(selected, head(remaining, top_n - length(selected)))
+      }
+
+      theme_map[[seg]][[theme_label]] <- head(selected, top_n)
     }
   }
   theme_map
@@ -462,11 +487,17 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
         if (!is.na(overall_metrics$bottom2)) format_percent(overall_metrics$bottom2) else if (!is.na(overall_metrics$bottom3)) format_percent(overall_metrics$bottom3) else "N/A"
       )
     } else {
-      comparison_text <- ""
+      overindex_note <- ""
       if (!is.na(overall_value)) {
-        gap <- abs(phrase_info$metric_value - overall_value)
+        gap <- phrase_info$metric_value - overall_value
         if (!is.na(gap) && gap >= MIN_DIFFERENTIATION_GAP) {
-          comparison_text <- sprintf(" compared to %s (%s)", comparison_label, format_percent(overall_value))
+          overindex_note <- sprintf(
+            " overindexes on %s compared to %s (%s, +%s)",
+            if (identical(phrase_info$metric_type, "bottom")) "disagreement" else "agreement",
+            comparison_label,
+            format_percent(overall_value),
+            format_percent(gap)
+          )
         }
       }
 
@@ -476,7 +507,7 @@ build_rating_narratives <- function(data, meta_row, segments, overall_metrics) {
         phrase_info$phrase,
         format_percent(phrase_info$metric_value),
         question_text,
-        comparison_text
+        overindex_note
       )
     }
 
