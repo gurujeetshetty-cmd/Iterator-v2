@@ -793,8 +793,13 @@ assemble_segment_text <- function(segment_sizes, narratives) {
 
 write_summary_txt <- function(lines, output_dir, file_name) {
   if (!dir.exists(output_dir)) {
-    stop(sprintf("Output directory does not exist: %s", output_dir))
+    dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   }
+
+  if (!dir.exists(output_dir)) {
+    stop(sprintf("Output directory does not exist and could not be created: %s", output_dir))
+  }
+
   output_path <- file.path(output_dir, file_name)
   writeLines(lines, output_path)
   output_path
