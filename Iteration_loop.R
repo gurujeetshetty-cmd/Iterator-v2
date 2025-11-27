@@ -96,7 +96,9 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
       }
 
       for (alias in aliases) {
-        if (alias %in% names(df)) {
+        if (!alias %in% names(df)) {
+          df[[alias]] <- df[[col]]
+        } else {
           df[[alias]] <- df[[col]]
         }
       }
@@ -255,8 +257,8 @@ check_and_assign <- function(df, i, col, val, var_name) {
 
     RULES_OP<- RULES_Checker(output_working_dir,paste0(file_run_and_date,"_SUMMARY",".xlsx"),solo)
 
-    of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+_(val|values|diff|diff_min|diff_max)$"
-    of_metric_cols <- names(RULES_OP)[grepl(of_pattern, names(RULES_OP))]
+    of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+(_values|_val|_diff(_max|_min)?|_diff)$"
+    of_metric_cols <- names(RULES_OP)[grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(RULES_OP), ignore.case = TRUE)]
     of_metric_cols <- sort_of_columns(of_metric_cols)
     if (length(of_metric_cols)) {
       input_data <- ensure_columns(input_data, of_metric_cols, NA)

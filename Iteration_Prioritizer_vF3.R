@@ -569,9 +569,9 @@ generate_best_combinations <- function(
     suppressWarnings({
       header_preview <- try(read.csv(output_file, nrows = 0, stringsAsFactors = FALSE), silent = TRUE)
       if (!inherits(header_preview, "try-error")) {
-        of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+_(val|values|diff|diff_min|diff_max)$"
+        of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+(_values|_val|_diff(_max|_min)?|_diff)$"
         existing_of_cols <- names(header_preview)[
-          grepl(of_pattern, names(header_preview))
+          grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(header_preview), ignore.case = TRUE)
         ]
       }
     })
