@@ -52,6 +52,10 @@ MIN_DIRECTIONAL_GAP <- 10
 MIN_MEANINGFUL_SHARE <- 15
 MIN_DIFFERENTIATION_GAP <- 5
 TOP_DIFFERENTIATOR_COUNT <- 5
+INDEX_THRESHOLD_HIGH <- 1.20
+INDEX_THRESHOLD_LOW <- 0.80
+INDEX_THRESHOLD_SMALL_SEG_HIGH <- 1.50
+INDEX_THRESHOLD_SMALL_SEG_LOW <- 0.67
 
 weighted_mean_safe <- function(x, w) {
   x <- safe_numeric(x)
@@ -241,6 +245,11 @@ passes_layer_rules <- function(metric_s, metric_x, overall_metric) {
   idx_s <- compute_index(metric_s, overall_metric)
   idx_x <- compute_index(metric_x, overall_metric)
 
+  threshold_high <- getOption("narrative.cross_segment.index_high", INDEX_THRESHOLD_HIGH)
+  threshold_low <- getOption("narrative.cross_segment.index_low", INDEX_THRESHOLD_LOW)
+  threshold_small_high <- getOption("narrative.cross_segment.small_seg_index_high", INDEX_THRESHOLD_SMALL_SEG_HIGH)
+  threshold_small_low <- getOption("narrative.cross_segment.small_seg_index_low", INDEX_THRESHOLD_SMALL_SEG_LOW)
+
   # Layer A
   if (gap >= 15) return(1L)
   if (gap <= -15) return(-1L)
@@ -248,15 +257,15 @@ passes_layer_rules <- function(metric_s, metric_x, overall_metric) {
   # Layer B
   if (!is.na(overall_metric) && overall_metric >= 20) {
     if (!is.na(idx_s) && !is.na(idx_x)) {
-      if (idx_s >= 1.20 && idx_s >= idx_x) return(1L)
-      if (idx_s <= 0.80 && idx_s <= idx_x) return(-1L)
+      if (idx_s >= threshold_high && idx_s >= idx_x) return(1L)
+      if (idx_s <= threshold_low && idx_s <= idx_x) return(-1L)
     }
   }
 
   # Layer C
   if (!is.na(overall_metric) && overall_metric < 20) {
-    if (gap >= 8 && !is.na(idx_s) && idx_s >= 1.50) return(1L)
-    if (gap <= -8 && !is.na(idx_s) && idx_s <= 0.67) return(-1L)
+    if (gap >= 8 && !is.na(idx_s) && idx_s >= threshold_small_high) return(1L)
+    if (gap <= -8 && !is.na(idx_s) && idx_s <= threshold_small_low) return(-1L)
   }
 
   0L
