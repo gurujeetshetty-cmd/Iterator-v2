@@ -1,8 +1,29 @@
 library(readxl)
 
+find_neighbor_file <- function(filename) {
+  caller_frames <- sys.frames()
+  caller_paths <- vapply(caller_frames, function(fr) {
+    if (!is.null(fr$ofile)) return(fr$ofile)
+    NA_character_
+  }, character(1))
+  caller_paths <- caller_paths[!is.na(caller_paths) & nzchar(caller_paths)]
+
+  candidate_dirs <- c(getwd())
+  if (length(caller_paths)) {
+    candidate_dirs <- c(candidate_dirs, dirname(normalizePath(caller_paths, winslash = "/", mustWork = FALSE)))
+  }
+  candidate_dirs <- unique(candidate_dirs)
+
+  candidates <- file.path(candidate_dirs, filename)
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing)) return(existing[[1]])
+  NULL
+}
+
 if (!exists("run_summary_generator")) {
-  if (file.exists("summary_generator_helper.R")) {
-    source("summary_generator_helper.R")
+  helper_path <- find_neighbor_file("summary_generator_helper.R")
+  if (!is.null(helper_path)) {
+    source(helper_path)
   }
 }
 

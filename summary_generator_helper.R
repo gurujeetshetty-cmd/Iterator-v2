@@ -3,8 +3,33 @@
 # Date: 2024-11-17
 # Utility functions for SUMMARY_GENERATOR module.
 
-if (file.exists("input_utils.R")) {
-  source("input_utils.R")
+find_neighbor_file <- function(filename) {
+  caller_frames <- sys.frames()
+  caller_paths <- vapply(caller_frames, function(fr) {
+    if (!is.null(fr$ofile)) {
+      return(fr$ofile)
+    }
+    NA_character_
+  }, character(1))
+  caller_paths <- caller_paths[!is.na(caller_paths) & nzchar(caller_paths)]
+
+  candidate_dirs <- c(getwd())
+  if (length(caller_paths)) {
+    candidate_dirs <- c(candidate_dirs, dirname(normalizePath(caller_paths, winslash = "/", mustWork = FALSE)))
+  }
+  candidate_dirs <- unique(candidate_dirs)
+
+  candidates <- file.path(candidate_dirs, filename)
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing)) {
+    return(existing[[1]])
+  }
+  NULL
+}
+
+input_utils_path <- find_neighbor_file("input_utils.R")
+if (!is.null(input_utils_path)) {
+  source(input_utils_path)
 } else {
   stop("input_utils.R not found. Please place it alongside summary_generator_helper.R.")
 }
