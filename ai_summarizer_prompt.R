@@ -28,23 +28,49 @@ summarizer_output_schema <- function() {
   )
 }
 
+default_ai_summarizer_sections <- function() {
+  list(
+    role = "You are an expert segment summarizer.",
+    instructions = c(
+      "Use the provided context to judge the coherence of the segment stories.",
+      "Respond ONLY with JSON, no prose."
+    ),
+    guidance_header = "Guidance:",
+    guidance = c(
+      "- Penalize contradictions or unclear linkages between segments when scoring coherence.",
+      "- Keep the segment_definition to exactly 15 words.",
+      "- Ensure segment_issues enumerates potential risks, gaps, or contradictions for each segment you infer.",
+      "- The detailed_story must tell a coherent narrative while maximizing differentiation across segments."
+    ),
+    context_header = "Context provided by user:",
+    narrative_header = "Narrative to summarize:"
+  )
+}
+
+collect_ai_summarizer_sections <- function() {
+  overrides <- getOption("iterator.ai_summarizer_prompt", list())
+  defaults <- default_ai_summarizer_sections()
+  if (!is.list(overrides) || is.null(names(overrides))) {
+    return(defaults)
+  }
+  utils::modifyList(defaults, overrides)
+}
+
 build_ai_summarizer_prompt <- function(narrative_text, context_prompt) {
   narrative_text <- narrative_text %||% ""
   context_prompt <- context_prompt %||% ""
 
+  sections <- collect_ai_summarizer_sections()
+
   paste(
-    "You are an expert segment summarizer.",
-    "Use the provided context to judge the coherence of the segment stories.",
-    "Respond ONLY with JSON, no prose.",
+    sections$role,
+    paste(sections$instructions, collapse = "\n"),
     summarizer_output_schema(),
-    "Guidance:",
-    "- Penalize contradictions or unclear linkages between segments when scoring coherence.",
-    "- Keep the segment_definition to exactly 15 words.",
-    "- Ensure segment_issues enumerates potential risks, gaps, or contradictions for each segment you infer.",
-    "- The detailed_story must tell a coherent narrative while maximizing differentiation across segments.",
-    "Context provided by user:",
+    sections$guidance_header,
+    paste(sections$guidance, collapse = "\n"),
+    sections$context_header,
     context_prompt,
-    "Narrative to summarize:",
+    sections$narrative_header,
     narrative_text,
     sep = "\n\n"
   )
