@@ -128,8 +128,8 @@ Iteration_running_function <- function(data_path, variables, tracker_path, outpu
    base_add_cols<-c("Ran_Iteration_Flag", "ITR_PATH", "ITR_FILE_NAME", "SUMMARY_TXT_PATH", "SUMMARY_TXT_FILE", "MAX_N_SIZE", "MAX_N_SIZE_PERC", "MIN_N_SIZE", "MIN_N_SIZE_PERC", "SOLUTION_N_SIZE", "PROB_95", "PROB_90", "PROB_80", "PROB_75", "PROB_LESS_THAN_50", "BIMODAL_VARS", "PROPER_BUCKETED_VARS", "BIMODAL_VARS_PERC","ROV_SD", "ROV_RANGE", "seg1_diff", "seg2_diff", "seg3_diff", "seg4_diff", "seg5_diff", "bi_1", "perf_1", "indT_1", "indB_1", "bi_2", "perf_2", "indT_2", "indB_2", "bi_3", "perf_3", "indT_3", "indB_3", "bi_4", "perf_4", "indT_4", "indB_4", "bi_5", "perf_5", "indT_5", "indB_5")
    input_perf_cols<-c("BIMODAL_VARS_INPUT_VARS","INPUT_PERF_SEG_COVERED","INPUT_PERF_FLAG","INPUT_PERF_MINSEG","INPUT_PERF_MAXSEG")
 
-   of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+_(val|values|diff|diff_min|diff_max)$"
-   existing_of_cols<-names(tracker)[grepl(of_pattern, names(tracker))]
+   of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+(_values|_val|_diff(_max|_min)?|_diff)$"
+   existing_of_cols<-names(tracker)[grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(tracker), ignore.case = TRUE)]
    add_cols<-c(base_add_cols, sort_of_columns(unique(existing_of_cols)), input_perf_cols)
    add_cols<-unique(add_cols)
 
