@@ -305,23 +305,38 @@ for(j in 1:seg_n){
 
   of_metrics <- list()
 
-  for (tbl in tables_ori) {
-    header_val <- tbl[1, 1]
-    if (!is.character(header_val) || !length(header_val)) next
-    match_loc <- regexpr("OF_[A-Za-z0-9_]+", header_val, ignore.case = TRUE)
-    if (match_loc[1] == -1) next
-    metric_name <- substr(header_val, match_loc[1], match_loc[1] + attr(match_loc, "match.length") - 1)
-
-    metric_key <- gsub("[^A-Za-z0-9_]", "", metric_name)
-    metric_key <- gsub("_+", "_", metric_key)
-    metric_key <- sub("_$", "", metric_key)
-    metric_key <- sub("^_", "", metric_key)
-    if (!nchar(metric_key)) next
-    metric_key <- toupper(metric_key)
-    if (grepl("^OF[A-Z0-9]", metric_key) && !grepl("^OF_", metric_key)) {
-      metric_key <- sub("^OF", "OF_", metric_key)
+  normalize_metric_key <- function(val) {
+    if (is.null(val) || !length(val)) return(NA_character_)
+    key <- as.character(val)
+    key <- gsub("[^A-Za-z0-9_]", "_", key)
+    key <- gsub("_+", "_", key)
+    key <- gsub("^_+|_+$", "", key)
+    key <- toupper(key)
+    if (grepl("^OF[A-Z0-9]", key) && !grepl("^OF_", key)) {
+      key <- sub("^OF", "OF_", key)
     }
-    if (!grepl("^OF_", metric_key)) next
+    if (!grepl("^OF_", key)) return(NA_character_)
+    key
+  }
+
+  for (tbl in tables_ori) {
+    candidates <- c(tbl[1, 1])
+    if (nrow(tbl) >= 2) {
+      first_col <- as.character(unlist(tbl[seq_len(min(3, nrow(tbl))), 1]))
+      candidates <- c(candidates, first_col)
+    }
+    candidates <- candidates[!is.na(candidates) & nzchar(as.character(candidates))]
+
+    metric_key <- NA_character_
+    for (candidate in candidates) {
+      normalized <- normalize_metric_key(candidate)
+      if (!is.na(normalized)) {
+        metric_key <- normalized
+        break
+      }
+    }
+
+    if (is.na(metric_key)) next
 
     base_key <- sub("(_DIFF.*|_VAL(UES)?|_VALUE.*|_MEAN.*|_MIN.*|_MAX.*)$", "", metric_key)
     base_key <- sub("_+$", "", base_key)

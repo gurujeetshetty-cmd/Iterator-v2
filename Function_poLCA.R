@@ -220,10 +220,12 @@ for (var in xtab_var_rows){
   
   colnames(xtab_table_iter) <- uniq_segs
   rownames(xtab_table_iter) <- uniq_set
-  
+
   vname <- as.character(XTab_Data_Labels[1,var])
   dname <- as.character(XTab_Data_Labels[2,var])
-  
+  var_id <- names(XTab_Data)[var]
+  var_label <- paste(var_id, "-", ifelse(nzchar(dname), dname, vname))
+
   empty_col <- rep("",length(uniq_set));
   
   chisq_stat <- wtd.chi.sq(XTab_Data[,var],XTab_Data[,xtab_var_col],weight=as.numeric(XTab_Data[,3]),na.rm=TRUE)
@@ -232,12 +234,12 @@ for (var in xtab_var_rows){
   rov_stat <- (chisq_stat - chisq_df) / sqrt(2*chisq_df)
   
   empty_row <- rep(NA,ncol(xtab_table_iter))
-  
+
   xtab_table_iter <- rbind(empty_row,empty_row,empty_row,empty_row,xtab_table_iter)
   rownames(xtab_table_iter)[1] <- c("empty_row")
-  rownames(xtab_table_iter)[2] <- dname
-  rownames(xtab_table_iter)[3] <- vname  
-  rownames(xtab_table_iter)[4] <- paste0('ROV=',round(rov_stat,digits=0))  
+  rownames(xtab_table_iter)[2] <- var_label
+  rownames(xtab_table_iter)[3] <- vname
+  rownames(xtab_table_iter)[4] <- paste0('ROV=',round(rov_stat,digits=0))
   
   num_msg_cnt <- vector()
   num_msg_pct <- vector()
