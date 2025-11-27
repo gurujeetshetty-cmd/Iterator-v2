@@ -1983,6 +1983,30 @@ extract_input_of_distributions <- function(input_path, summary_path, segment_lab
     return(list())
   }
 
+  apply_variable_id_header <- function(df) {
+    if (is.null(df) || !nrow(df)) {
+      return(list(data = df, names = names(df)))
+    }
+
+    current_names <- names(df)
+
+    header_row <- as.character(df[1, ])
+    header_clean <- toupper(trimws(header_row))
+    header_clean <- gsub("[^A-Z0-9_]+", "_", header_clean)
+    header_clean <- gsub("_+", "_", header_clean)
+    has_of_header <- grepl("^OF_", header_clean)
+
+    if (any(has_of_header)) {
+      new_names <- current_names
+      new_names[has_of_header] <- header_clean[has_of_header]
+      df <- df[-1, , drop = FALSE]
+      names(df) <- new_names
+      return(list(data = df, names = new_names))
+    }
+
+    list(data = df, names = current_names)
+  }
+
   assignments <- extract_segment_assignments(summary_path, segment_labels)
   if (!nrow(assignments)) {
     return(list())
@@ -2013,7 +2037,10 @@ extract_input_of_distributions <- function(input_path, summary_path, segment_lab
       next
     }
 
-    names(raw) <- make.unique(as.character(names(raw)))
+    header_fix <- apply_variable_id_header(raw)
+    raw <- header_fix$data
+
+    names(raw) <- make.unique(as.character(header_fix$names))
     norm_names <- normalize_key(names(raw))
 
     resp_idx <- which(norm_names %in% c("respid", "responseid", "respondentid", "resp_id", "id"))
