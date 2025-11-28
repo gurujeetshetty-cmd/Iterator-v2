@@ -419,7 +419,9 @@ xtab_output_final <- cbind(xtab_output_final,empty_col)
 ##############################################
 
 for(col in seq(1,ncol(xtab_output)-1,1)){
-  xtab_output_index <-  100 * xtab_output[,col] / xtab_output[,ncol(xtab_output)]
+  num_col <- suppressWarnings(as.numeric(xtab_output[, col]))
+  denom_col <- suppressWarnings(as.numeric(xtab_output[, ncol(xtab_output)]))
+  xtab_output_index <-  100 * num_col / denom_col
   xtab_output_final <- cbind(xtab_output_final,xtab_output_index)
   colnames(xtab_output_final)[ncol(xtab_output_final)] <- paste0("INDEX_",colnames(xtab_output)[col])
 }   ###-END-FOR-###
