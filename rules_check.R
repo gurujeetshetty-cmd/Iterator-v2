@@ -46,27 +46,35 @@ RULES_Checker <- function(path, xTABS_name, solo) {
   # Load and clean sheets
   # ============================================================
   segment_mapped <- safe_read_excel(xTABS_name, 1, col_names = TRUE)
-    # --- FIX START ---
-    if (!"poLCA_SEG" %in% names(segment_mapped)) {
+  if (!"poLCA_SEG" %in% names(segment_mapped)) {
     stop("poLCA_SEG column not found in Sheet 1 of ", xTABS_name)
-    }
-    segment_mapped$poLCA_SEG <- suppressWarnings(as.numeric(segment_mapped$poLCA_SEG))
-    segment_mapped <- segment_mapped[!is.na(segment_mapped$poLCA_SEG), ]
-    if (nrow(segment_mapped) == 0) {
-    stop("Sheet 1 has no valid segment data in ", xTABS_name)
-    }
-    # --- FIX END ---
+  }
 
-    seg_n <- max(segment_mapped$poLCA_SEG)
+  # --- Derive seg_n robustly from every available source ---
+  seg_from_map <- suppressWarnings(as.numeric(segment_mapped$poLCA_SEG))
+  segment_mapped$poLCA_SEG <- seg_from_map
+  segment_mapped <- segment_mapped[!is.na(segment_mapped$poLCA_SEG), ]
+  if (nrow(segment_mapped) == 0) {
+    stop("Sheet 1 has no valid segment data in ", xTABS_name)
+  }
 
   seg_prob <- safe_read_excel(xTABS_name, 3, col_names = TRUE)
   xTabs <- safe_read_excel(xTABS_name, 2, col_names = FALSE)
 
+  seg_from_map_n <- suppressWarnings(max(seg_from_map, na.rm = TRUE))
+  seg_from_prob_n <- if (ncol(seg_prob) > 1) ncol(seg_prob) - 1 else NA_real_
+  seg_from_xtabs_n <- if (ncol(xTabs) >= 3) suppressWarnings(as.numeric((ncol(xTabs) - 3) / 2)) else NA_real_
+
+  seg_n <- suppressWarnings(max(c(seg_from_map_n, seg_from_prob_n, seg_from_xtabs_n), na.rm = TRUE))
+  if (is.infinite(seg_n)) seg_n <- NA_real_
+  seg_n <- as.integer(seg_n)
+  if (is.na(seg_n) || seg_n <= 0) {
+    stop(sprintf("[rules_check.R] ❌ Could not determine number of segments. Derived: map=%s, prob=%s, xtabs=%s", seg_from_map_n, seg_from_prob_n, seg_from_xtabs_n))
+  }
+
   if (nrow(segment_mapped) == 0 || ncol(segment_mapped) == 0) {
     stop("❌ ERROR: 'segment_mapped' sheet could not be read properly.")
   }
-
-  seg_n <- suppressWarnings(max(safe_as_numeric(segment_mapped$poLCA_SEG), na.rm = TRUE))
   segment_mapped_1 <- segment_mapped %>%
     dplyr::group_by(poLCA_SEG) %>% dplyr::count(poLCA_SEG)
   seg_n_sizes <- segment_mapped_1
