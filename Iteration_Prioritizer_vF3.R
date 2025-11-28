@@ -538,23 +538,27 @@ generate_best_combinations <- function(
   sort_of_columns <- function(cols) {
     if (!length(cols)) return(cols)
 
-    base_keys <- gsub("^(max|min)_", "", cols)
-    base_keys <- sub("_(values|val|diff_max|diff_min|diff)$", "", base_keys, perl = TRUE)
-    base_keys <- toupper(base_keys)
+    base_keys <- gsub("^(MAX|MIN)_", "", toupper(cols))
+    base_keys <- sub("_(VALUES|VAL|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN|DIFF)$", "", base_keys, perl = TRUE)
 
-    metric_type <- ifelse(grepl("^max_", cols), "legacy_max",
-                    ifelse(grepl("^min_", cols), "legacy_min",
-                           sub("^OF_[A-Za-z0-9_]+_", "", cols)))
+    suffix <- sub("^OF_[A-Z0-9_]+_", "", toupper(cols))
+    metric_type <- tolower(suffix)
+
+    metric_type[metric_type == "diff_max"] <- "maxdiff"
+    metric_type[metric_type == "diff_min"] <- "mindiff"
 
     metric_order <- c(
       values = 1L,
       val = 2L,
-      diff_max = 3L,
+      maxdiff = 3L,
       diff = 4L,
-      diff_min = 5L,
+      mindiff = 5L,
       legacy_max = 6L,
       legacy_min = 7L
     )
+
+    metric_type <- ifelse(grepl("^MAX_", cols, ignore.case = TRUE), "legacy_max",
+                    ifelse(grepl("^MIN_", cols, ignore.case = TRUE), "legacy_min", metric_type))
 
     metric_type[metric_type == ""] <- "values"
     metric_type[!(metric_type %in% names(metric_order))] <- "zzz"
@@ -569,7 +573,7 @@ generate_best_combinations <- function(
     suppressWarnings({
       header_preview <- try(read.csv(output_file, nrows = 0, stringsAsFactors = FALSE), silent = TRUE)
       if (!inherits(header_preview, "try-error")) {
-        of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+(_values|_val|_diff(_max|_min)?|_diff)$"
+        of_pattern <- "^((max|min)_)?OF_[A-Za-z0-9_]+(_VALUES|_VAL|_MINDIFF|_MAXDIFF|_DIFF(_MAX|_MIN)?|_DIFF)$"
         existing_of_cols <- names(header_preview)[
           grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(header_preview), ignore.case = TRUE)
         ]

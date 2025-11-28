@@ -1314,20 +1314,29 @@ filter_of_metric_distributions <- function(distributions) {
 }
 
 extract_of_metric_table <- function(rules_result, seg_n) {
-  value_cols <- grep("^OF_.*_values$", names(rules_result), value = TRUE)
-  if (!length(value_cols)) {
+  name_lookup <- toupper(names(rules_result))
+  value_idx <- grep("^OF_.*_VALUES$", name_lookup)
+  if (!length(value_idx)) {
     return(tibble::tibble())
   }
 
-  metric_tables <- lapply(value_cols, function(col) {
-    base <- sub("_values$", "", col)
-    values <- parse_of_display_values(rules_result[[col]], seg_n)
+  metric_tables <- lapply(value_idx, function(idx) {
+    col_name <- names(rules_result)[idx]
+    base_upper <- sub("_VALUES$", "", name_lookup[idx])
+    values <- parse_of_display_values(rules_result[[col_name]], seg_n)
+
+    diff_max_idx <- match(paste0(base_upper, "_MAXDIFF"), name_lookup)
+    diff_min_idx <- match(paste0(base_upper, "_MINDIFF"), name_lookup)
+
+    diff_max_val <- if (!is.na(diff_max_idx)) suppressWarnings(as.numeric(rules_result[[diff_max_idx]])) else NA_real_
+    diff_min_val <- if (!is.na(diff_min_idx)) suppressWarnings(as.numeric(rules_result[[diff_min_idx]])) else NA_real_
+
     tibble::tibble(
-      Metric = base,
+      Metric = base_upper,
       Segment = paste0("Segment ", seq_len(seg_n)),
       Value = values,
-      DiffMax = rep(suppressWarnings(as.numeric(rules_result[[paste0(base, "_diff_max")]])), seg_n),
-      DiffMin = rep(suppressWarnings(as.numeric(rules_result[[paste0(base, "_diff_min")]])), seg_n)
+      DiffMax = rep(diff_max_val, seg_n),
+      DiffMin = rep(diff_min_val, seg_n)
     )
   })
 
