@@ -231,33 +231,69 @@ for(j in 1:seg_n){
       diff_min = 0
     )
 
-    if (is.null(tbl) || !nrow(tbl) || !ncol(tbl)) return(result)
+    if (is.null(tbl) || !nrow(tbl) || !ncol(tbl)) {
+      cat("  [OF_EXTRACT] Skipping: empty table\n")
+      return(result)
+    }
 
+    # Remove completely empty rows
     tbl <- tbl[rowSums(is.na(tbl)) != ncol(tbl), , drop = FALSE]
-    if (!nrow(tbl)) return(result)
+    if (!nrow(tbl)) {
+      cat("  [OF_EXTRACT] Skipping: no non-empty rows\n")
+      return(result)
+    }
 
-    tbl_num <- as.data.frame(lapply(tbl, function(col) suppressWarnings(as.numeric(as.character(col)))), stringsAsFactors = FALSE)
-    if (!ncol(tbl_num)) return(result)
+    # Convert all columns to numeric
+    tbl_num <- as.data.frame(lapply(tbl, function(col) {
+      suppressWarnings(as.numeric(as.character(col)))
+    }), stringsAsFactors = FALSE)
+    
+    if (!ncol(tbl_num)) {
+      cat("  [OF_EXTRACT] Skipping: no columns after numeric conversion\n")
+      return(result)
+    }
 
+    # Skip first column if it's all NA (likely labels)
     numeric_data <- tbl_num
     if (ncol(tbl_num) > 1 && all(is.na(tbl_num[[1]]))) {
       numeric_data <- tbl_num[, -1, drop = FALSE]
+      cat("  [OF_EXTRACT] Dropped first column (all NA)\n")
     }
 
-    if (!ncol(numeric_data)) return(result)
+    if (!ncol(numeric_data)) {
+      cat("  [OF_EXTRACT] Skipping: no data columns remaining\n")
+      return(result)
+    }
 
+    # Extract segment columns (should be first seg_n columns)
     seg_cols <- seq_len(min(seg_n, ncol(numeric_data)))
     seg_data <- numeric_data[, seg_cols, drop = FALSE]
-    if (!nrow(seg_data)) return(result)
+    
+    if (!nrow(seg_data)) {
+      cat("  [OF_EXTRACT] Skipping: no rows in segment data\n")
+      return(result)
+    }
 
+    cat(sprintf("  [OF_EXTRACT] Processing %d column(s) x %d row(s)\n", ncol(seg_data), nrow(seg_data)))
+
+    # Calculate mean for each segment column
     values <- vapply(seg_data, function(col) {
-      if (all(is.na(col))) return(NA_real_)
-      mean(col, na.rm = TRUE)
+      valid_vals <- col[!is.na(col) & is.finite(col)]
+      if (length(valid_vals) == 0) return(NA_real_)
+      mean(valid_vals)
     }, numeric(1))
 
     valid_values <- values[is.finite(values)]
-    if (!length(valid_values)) return(result)
+    if (!length(valid_values)) {
+      cat("  [OF_EXTRACT] Warning: no finite values after aggregation\n")
+      return(result)
+    }
 
+    cat(sprintf("  [OF_EXTRACT] Extracted %d segment values: %s\n", 
+                length(valid_values), 
+                paste(round(valid_values, 2), collapse = ", ")))
+
+    # Format display string
     format_values <- function(vals) {
       formatted <- format(round(vals, 2), trim = TRUE, scientific = FALSE)
       paste(formatted, collapse = " | ")
@@ -266,43 +302,63 @@ for(j in 1:seg_n){
     result$values <- valid_values
     result$values_display <- format_values(valid_values)
 
-    if (length(valid_values) <= 1) return(result)
+    # Calculate max/min differences
+    if (length(valid_values) > 1) {
+      diffs <- abs(utils::combn(valid_values, 2, diff))
+      diffs <- diffs[is.finite(diffs)]
 
-    diffs <- abs(utils::combn(valid_values, 2, diff))
-    diffs <- diffs[is.finite(diffs)]
-
-    if (length(diffs)) {
-      result$diff_max <- max(diffs)
-      result$diff_min <- min(diffs)
+      if (length(diffs)) {
+        result$diff_max <- max(diffs)
+        result$diff_min <- min(diffs)
+        cat(sprintf("  [OF_EXTRACT] Differences: max=%.2f, min=%.2f\n", result$diff_max, result$diff_min))
+      }
     }
 
     result
   }
-
   of_metrics <- list()
 
   normalize_metric_key <- function(val) {
     if (is.null(val) || !length(val)) return(NA_character_)
-    key <- as.character(val)
+    
+    key <- trimws(as.character(val))
+    if (!nzchar(key)) return(NA_character_)
+    
+    # Replace all non-alphanumeric (except underscore) with underscore
     key <- gsub("[^A-Za-z0-9_]", "_", key)
+    # Collapse multiple underscores
     key <- gsub("_+", "_", key)
+    # Remove leading/trailing underscores
     key <- gsub("^_+|_+$", "", key)
+    # Convert to uppercase
     key <- toupper(key)
+    
+    # Auto-add underscore if format is "OFxxx" instead of "OF_xxx"
     if (grepl("^OF[A-Z0-9]", key) && !grepl("^OF_", key)) {
       key <- sub("^OF", "OF_", key)
     }
+    
+    # Must start with OF_
     if (!grepl("^OF_", key)) return(NA_character_)
+    
+    cat(sprintf("  [NORMALIZE_KEY] '%s' -> '%s'\n", val, key))
     key
   }
 
-  for (tbl in tables_ori) {
+  cat("\n[OF_METRICS] Scanning", length(tables_ori), "tables for OF_ metrics...\n")
+  
+  for (tbl_idx in seq_along(tables_ori)) {
+    tbl <- tables_ori[[tbl_idx]]
+    
+    # Gather candidate metric names from first few cells of first column
     candidates <- c(tbl[1, 1])
     if (nrow(tbl) >= 2) {
       first_col <- as.character(unlist(tbl[seq_len(min(3, nrow(tbl))), 1]))
       candidates <- c(candidates, first_col)
     }
-    candidates <- candidates[!is.na(candidates) & nzchar(as.character(candidates))]
+    candidates <- unique(candidates[!is.na(candidates) & nzchar(as.character(candidates))])
 
+    # Try to find a valid OF_ metric name
     metric_key <- NA_character_
     for (candidate in candidates) {
       normalized <- normalize_metric_key(candidate)
@@ -312,15 +368,35 @@ for(j in 1:seg_n){
       }
     }
 
-    if (is.na(metric_key)) next
+    if (is.na(metric_key)) {
+      # Not an OF_ metric table
+      next
+    }
 
+    cat(sprintf("[OF_METRICS] Table %d: Found metric '%s'\n", tbl_idx, metric_key))
+
+    # Extract base key (remove suffixes like _VALUES, _DIFF, etc.)
     base_key <- sub("(_DIFF.*|_VAL(UES)?|_VALUE.*|_MEAN.*|_MIN.*|_MAX.*)$", "", metric_key)
     base_key <- sub("_+$", "", base_key)
     if (!nchar(base_key)) base_key <- metric_key
-    if (base_key %in% names(of_metrics)) next
+    
+    # Skip if already processed this base metric
+    if (base_key %in% names(of_metrics)) {
+      cat(sprintf("  [OF_METRICS] Skipping duplicate base_key '%s'\n", base_key))
+      next
+    }
 
+    # Extract metrics from table
+    cat(sprintf("[OF_METRICS] Extracting metrics for '%s'...\n", base_key))
     metrics <- extract_of_metrics(tbl, seg_n)
     of_metrics[[base_key]] <- metrics
+    
+    cat(sprintf("[OF_METRICS] Stored: %s_VALUES = '%s'\n", base_key, metrics$values_display))
+  }
+  
+  cat(sprintf("\n[OF_METRICS] Total OF_ metrics found: %d\n", length(of_metrics)))
+  if (length(of_metrics) > 0) {
+    cat("[OF_METRICS] Metric names:", paste(names(of_metrics), collapse = ", "), "\n")
   }
 
 # Check for bimodality across cleaned vars

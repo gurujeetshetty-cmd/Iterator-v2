@@ -30,9 +30,32 @@ if (!exists("run_summary_generator")) {
 # Function to run the iterations
 run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_db_name,set_num_segments,File_name,solo, progress_cb = NULL, run_summary_txt = FALSE) {
   print(paste0("SOLO VALUE -4: ",solo))
-  # Read the Excel file
+  
+  # ============================================================
+  # IN-MEMORY CACHING: Read CSV once at start
+  # ============================================================
   file_path<-file.path(comb_data[[1]],comb_data[[2]])
   input_data <- read.csv(file_path,stringsAsFactors=FALSE)
+  
+  # Cache configuration
+  cache_flush_interval <- 5L  # Flush to disk every N iterations
+  iterations_since_flush <- 0L
+  
+  cat(sprintf("\n[CACHE] Initialized in-memory cache from: %s\n", file_path))
+  cat(sprintf("[CACHE] Flush interval: every %d iterations\n", cache_flush_interval))
+  
+  # Helper function to flush cache to disk
+  flush_cache <- function(data, path, reason = "periodic") {
+    tryCatch({
+      write.csv(data, path, row.names = FALSE)
+      cat(sprintf("📝 [CACHE] Flushed to disk (%s): %s\n", reason, path))
+      return(TRUE)
+    }, error = function(e) {
+      cat(sprintf("❌ [CACHE] Flush failed: %s\n", e$message))
+      return(FALSE)
+    })
+  }
+  # ============================================================
 
   safe_progress <- function(current, total, iteration = NA_integer_, status = NULL) {
     if (is.null(progress_cb)) {
@@ -77,36 +100,6 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
     df
   }
 
-  propagate_legacy_of_aliases <- function(df) {
-    name_upper <- toupper(names(df))
-    canonical_pattern <- "^OF_[A-Z0-9_]+_(VALUES|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN)$"
-    canonical_cols <- names(df)[grepl(canonical_pattern, name_upper)]
-    if (!length(canonical_cols)) return(df)
-
-    for (col in canonical_cols) {
-      col_upper <- toupper(col)
-      base <- sub("_(VALUES|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN)$", "", col_upper)
-
-      aliases <- character(0)
-      if (endsWith(col_upper, "VALUES")) {
-        aliases <- c(aliases, paste0(base, "_VAL"))
-      }
-      if (endsWith(col_upper, "MAXDIFF") || endsWith(col_upper, "DIFF_MAX")) {
-        aliases <- c(aliases, paste0(base, "_DIFF"), paste0("MAX_", base, "_DIFF"))
-      }
-      if (endsWith(col_upper, "MINDIFF") || endsWith(col_upper, "DIFF_MIN")) {
-        aliases <- c(aliases, paste0("MIN_", base, "_DIFF"))
-      }
-
-      for (alias in aliases) {
-        existing_idx <- match(alias, toupper(names(df)))
-        target_name <- if (is.na(existing_idx)) alias else names(df)[existing_idx]
-        df[[target_name]] <- df[[col]]
-      }
-    }
-
-    df
-  }
 
   sort_of_columns <- function(cols) {
     if (!length(cols)) return(cols)
@@ -268,14 +261,23 @@ check_and_assign <- function(df, row_index, iteration_value, col, val, var_name)
   return(df)
 }
 
+
     RULES_OP<- RULES_Checker(output_working_dir,paste0(file_run_and_date,"_SUMMARY",".xlsx"),solo)
 
-    of_pattern <- "^((max|min)_)?OF_[A-Za-z0-9_]+(_VALUES|_VAL|_MINDIFF|_MAXDIFF|_DIFF(_MAX|_MIN)?|_DIFF)$"
-    of_metric_cols <- names(RULES_OP)[grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(RULES_OP), ignore.case = TRUE)]
+    # Extract OF_ metric columns from RULES_OP
+    # Pattern matches: OF_XXX_VALUES, OF_XXX_MAXDIFF, OF_XXX_MINDIFF
+    of_pattern <- "^OF_[A-Z0-9_]+_(VALUES|MAXDIFF|MINDIFF)$"
+    of_metric_cols <- names(RULES_OP)[grepl(of_pattern, names(RULES_OP), ignore.case = FALSE)]
     of_metric_cols <- sort_of_columns(of_metric_cols)
-    if (length(of_metric_cols)) {
+    
+    cat(sprintf("\n[ITERATION_LOOP] Iteration %d: Found %d OF_ metrics in RULES_OP\n", iteration, length(of_metric_cols)))
+    if (length(of_metric_cols) > 0) {
+      cat("[ITERATION_LOOP] OF_ metric columns:", paste(of_metric_cols, collapse = ", "), "\n")
       input_data <- ensure_columns(input_data, of_metric_cols, NA)
+    } else {
+      cat("[ITERATION_LOOP] No OF_ metrics found\n")
     }
+
 
     # === Begin debug-safe assignments ===
 
@@ -352,8 +354,6 @@ check_and_assign <- function(df, row_index, iteration_value, col, val, var_name)
       input_data <- check_and_assign(input_data, i, iteration, col_name, RULES_OP[[col_name]], col_name)
     }
 
-    input_data <- propagate_legacy_of_aliases(input_data)
-
     input_data <- check_and_assign(input_data, i, iteration, "BIMODAL_VARS_INPUT_VARS", RULES_OP$final_bi_n_input, "final_bi_n_input")
 
     # --- new input performance metrics ---
@@ -376,7 +376,16 @@ check_and_assign <- function(df, row_index, iteration_value, col, val, var_name)
     ordered_cols <- c(ordered_cols, leftover_cols)
     input_data <- input_data[, ordered_cols, drop = FALSE]
 
-    write.csv(input_data, file_path, row.names = FALSE)
+    # ============================================================
+    # CACHE MANAGEMENT: Flush periodically instead of every iteration
+    # ============================================================
+    iterations_since_flush <- iterations_since_flush + 1L
+    
+    if (iterations_since_flush >= cache_flush_interval) {
+      flush_cache(input_data, file_path, sprintf("periodic after %d iterations", iterations_since_flush))
+      iterations_since_flush <- 0L
+    }
+    # ============================================================
 
     safe_progress(
       processed_iterations,
@@ -404,6 +413,15 @@ check_and_assign <- function(df, row_index, iteration_value, col, val, var_name)
        return(op)
     }
   }
+
+  # ============================================================
+  # FINAL CACHE FLUSH: Ensure all data is written to disk
+  # ============================================================
+  flush_cache(input_data, file_path, "final")
+  cat(sprintf("\n[CACHE] Completed %d iterations with %d flush(es)\n", 
+              processed_iterations, 
+              ceiling(processed_iterations / cache_flush_interval) + 1))
+  # ============================================================
 
   safe_progress(
     total_iterations,
