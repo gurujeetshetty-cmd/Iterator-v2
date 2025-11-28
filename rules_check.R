@@ -6,6 +6,9 @@ RULES_Checker <- function(path, xTABS_name, solo) {
   print("SQC-initial")
   setwd(path)
 
+  # ============================================================
+  # CONFIGURATION: Read from iterator.config
+  # ============================================================
   iterator_config <- getOption("iterator.config", default = list())
   cfg_num <- function(name, default) {
     val <- iterator_config[[name]]
@@ -33,7 +36,7 @@ RULES_Checker <- function(path, xTABS_name, solo) {
       # Normalize weird punctuation / spaces
       col <- gsub("[\r\n\t]", " ", col)
       col <- gsub("\u00A0", " ", col)    # non-breaking space
-      col <- gsub("[“”‘’]", "\"", col)   # smart quotes
+      col <- gsub("[""'']", "\"", col)   # smart quotes
       col <- gsub("[\u2013\u2014]", "-", col) # en/em dash
       col <- gsub("[^[:print:]]", "", col)    # remove hidden non-printables
       trimws(col)
@@ -61,18 +64,18 @@ RULES_Checker <- function(path, xTABS_name, solo) {
   # Load and clean sheets
   # ============================================================
   segment_mapped <- safe_read_excel(xTABS_name, 1, col_names = TRUE)
-    # --- FIX START ---
-    if (!"poLCA_SEG" %in% names(segment_mapped)) {
+  
+  # Validate poLCA_SEG column
+  if (!"poLCA_SEG" %in% names(segment_mapped)) {
     stop("poLCA_SEG column not found in Sheet 1 of ", xTABS_name)
-    }
-    segment_mapped$poLCA_SEG <- suppressWarnings(as.numeric(segment_mapped$poLCA_SEG))
-    segment_mapped <- segment_mapped[!is.na(segment_mapped$poLCA_SEG), ]
-    if (nrow(segment_mapped) == 0) {
+  }
+  segment_mapped$poLCA_SEG <- suppressWarnings(as.numeric(segment_mapped$poLCA_SEG))
+  segment_mapped <- segment_mapped[!is.na(segment_mapped$poLCA_SEG), ]
+  if (nrow(segment_mapped) == 0) {
     stop("Sheet 1 has no valid segment data in ", xTABS_name)
-    }
-    # --- FIX END ---
+  }
 
-    seg_n <- max(segment_mapped$poLCA_SEG)
+  seg_n <- max(segment_mapped$poLCA_SEG)
 
   seg_prob <- safe_read_excel(xTABS_name, 3, col_names = TRUE)
   xTabs <- safe_read_excel(xTABS_name, 2, col_names = FALSE)
@@ -81,15 +84,17 @@ RULES_Checker <- function(path, xTABS_name, solo) {
     stop("❌ ERROR: 'segment_mapped' sheet could not be read properly.")
   }
 
-  seg_n <- suppressWarnings(max(safe_as_numeric(segment_mapped$poLCA_SEG), na.rm = TRUE))
+  # Calculate segment sizes
   segment_mapped_1 <- segment_mapped %>%
-    dplyr::group_by(poLCA_SEG) %>% dplyr::count(poLCA_SEG)
+    dplyr::group_by(poLCA_SEG) %>% 
+    dplyr::count(poLCA_SEG)
   seg_n_sizes <- segment_mapped_1
   Max_n_size <- max(segment_mapped_1$n)
   Max_n_size_perc <- Max_n_size / sum(segment_mapped_1$n)
   Min_n_size <- min(segment_mapped_1$n)
   Min_n_size_perc <- Min_n_size / sum(segment_mapped_1$n)
 
+  # Calculate probability metrics
   seg_prob[] <- lapply(seg_prob, safe_as_numeric)
   seg_prob$max_prob <- apply(seg_prob[, 2:(seg_n + 1)], 1, max, na.rm = TRUE)
   prob_95 <- mean(seg_prob$max_prob > 0.95, na.rm = TRUE)
@@ -116,52 +121,50 @@ RULES_Checker <- function(path, xTABS_name, solo) {
     return(tables)
   }
 
-    # --- Safety checks before slicing xTabs ---
-    if (is.null(xTabs) || nrow(xTabs) == 0) {
+  # Safety checks before slicing xTabs
+  if (is.null(xTabs) || nrow(xTabs) == 0) {
     stop("[rules_check.R] ❌ xTabs is empty or could not be read. Check the Excel sheet name and structure.")
-    }
+  }
 
-    if (is.null(seg_n) || is.na(seg_n) || seg_n <= 0) {
+  if (is.null(seg_n) || is.na(seg_n) || seg_n <= 0) {
     stop(sprintf("[rules_check.R] ❌ seg_n is invalid (value: %s). Check sheet 1 of %s for poLCA_SEG column.", seg_n, xTABS_name))
-    }
+  }
 
-    last_row_index <- nrow(xTabs[, 1, drop = FALSE])
-    if (is.na(last_row_index) || last_row_index < 28) {
+  last_row_index <- nrow(xTabs[, 1, drop = FALSE])
+  if (is.na(last_row_index) || last_row_index < 28) {
     stop(sprintf("[rules_check.R] ❌ xTabs appears too short (%d rows). Check input file format.", last_row_index))
-    }
+  }
 
-    col_limit <- 3 + 2 * seg_n
-    if (col_limit > ncol(xTabs)) {
+  col_limit <- 3 + 2 * seg_n
+  if (col_limit > ncol(xTabs)) {
     warning(sprintf("[rules_check.R] ⚠️ Expected %d columns based on seg_n=%d, but xTabs has only %d. Adjusting.",
                     col_limit, seg_n, ncol(xTabs)))
     col_limit <- ncol(xTabs)
-    }
+  }
 
-    # --- Safe subsetting ---
-    subset_start <- min(28, nrow(xTabs))
-    subset_end <- max(28, last_row_index)
+  # Safe subsetting
+  subset_start <- min(28, nrow(xTabs))
+  subset_end <- max(28, last_row_index)
 
-    tables <- split_by_blank_rows(xTabs[subset_start:subset_end, 1:col_limit])
-    tables_ori <- lapply(tables, clean_df_safe)
+  tables <- split_by_blank_rows(xTabs[subset_start:subset_end, 1:col_limit])
+  tables_ori <- lapply(tables, clean_df_safe)
 
-    contains_all_patterns <- function(df) {
-        patterns <- c("A_", "C_")
-        results <- sapply(patterns, function(pattern) {
-        any(sapply(df, function(col) any(grepl(pattern, col, ignore.case = TRUE))))
-        })
-        all(results)
-    }
+  contains_all_patterns <- function(df) {
+    patterns <- c("A_", "C_")
+    results <- sapply(patterns, function(pattern) {
+      any(sapply(df, function(col) any(grepl(pattern, col, ignore.case = TRUE))))
+    })
+    all(results)
+  }
 
-    tables_cleaned_input <- list()
-    for (i in seq_along(tables_ori)) {
+  tables_cleaned_input <- list()
+  for (i in seq_along(tables_ori)) {
     ti  <- tables_ori[[i]]
     hdr <- ti[1, 1, drop = TRUE]
     if (contains_all_patterns(ti) && is.character(hdr) && grepl("^00_SEGM_", hdr)) {
-        tables_cleaned_input[[length(tables_cleaned_input) + 1]] <- ti
+      tables_cleaned_input[[length(tables_cleaned_input) + 1]] <- ti
     }
-    }
-
-
+  }
 
   tables_cleaned <- Filter(contains_all_patterns, tables_ori)
   proper_bucketted_vars <- length(tables_cleaned)
@@ -179,49 +182,141 @@ RULES_Checker <- function(path, xTABS_name, solo) {
   sd_rov <- ifelse(length(rov_list_input) > 1, sd(rov_list_input), NA)
   range_rov <- ifelse(length(rov_list_input) > 1, diff(range(rov_list_input)), NA)
 
+  # ============================================================
+  # OPTIMIZED: Segment-level differentiating variables
+  # Using matrices instead of assign/get
+  # ============================================================
+  cat("[RULES] Calculating segment differentiation metrics...\n")
+  
+  # Pre-allocate matrices for all metrics
+  n_tables <- length(tables_cleaned)
+  bi_matrix <- matrix(0, nrow = n_tables, ncol = seg_n)
+  perf_matrix <- matrix(0, nrow = n_tables, ncol = seg_n)
+  indT_matrix <- matrix(0, nrow = n_tables, ncol = seg_n)
+  indB_matrix <- matrix(0, nrow = n_tables, ncol = seg_n)
+  seg_diff_flags <- matrix(FALSE, nrow = n_tables, ncol = seg_n)
 
-# Segment-level differentiating variables
-seg1_diff=0; seg2_diff=0; seg3_diff=0; seg4_diff=0; seg5_diff=0
-bi_1<-0; perf_1<-0; indT_1<-0; indB_1<-0
-bi_2<-0; perf_2<-0; indT_2<-0; indB_2<-0
-bi_3<-0; perf_3<-0; indT_3<-0; indB_3<-0
-bi_4<-0; perf_4<-0; indT_4<-0; indB_4<-0
-bi_5<-0; perf_5<-0; indT_5<-0; indB_5<-0
+  # Cache A_row and C_row for each table (avoid repeated pattern matching)
+  ab_rows_cache <- vector("list", n_tables)
+  for(i in seq_along(tables_cleaned)){
+    d1 <- tables_cleaned[[i]]
+    ab_rows_cache[[i]] <- list(
+      A = d1[apply(d1, 1, function(row) any(grepl("A_", row, fixed = TRUE))), ],
+      C = d1[apply(d1, 1, function(row) any(grepl("C_", row, fixed = TRUE))), ]
+    )
+  }
 
-diffTB<-0
-print("QC-1")
-for(j in 1:seg_n){
-    flag_1<-0
-    for(i in 1:length(tables_cleaned)){
-        d1<-tables_cleaned[[i]]
-        bi<-0; perf<-0; indT<-0; indB<-0
-        A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row))), ]
-        C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row))), ]
-        if((as.numeric(A_row[3+seg_n+j])>bimodality_hi_threshold)&&(as.numeric(C_row[3+seg_n+j])>bimodality_hi_threshold)&&
-           (as.numeric(A_row[1+j])>bimodality_low_threshold)&&(as.numeric(C_row[1+j])>bimodality_low_threshold)){bi<-1}
-        if(((as.numeric(A_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(C_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(A_row[2+seg_n])>performance_base_threshold))||
-           ((as.numeric(A_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(C_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(C_row[2+seg_n])>performance_base_threshold))){perf<-1}
-        if(((as.numeric(A_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(A_row[2+seg_n])>independence_base_threshold))||
-           ((as.numeric(C_row[3+seg_n+j])>performance_hi_threshold)&&(as.numeric(C_row[2+seg_n])>independence_base_threshold))){if(bi!=1){indT<-1}}
-        if(((as.numeric(A_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(A_row[2+seg_n])>independence_base_threshold))||
-           ((as.numeric(C_row[3+seg_n+j])<performance_lo_threshold)&&(as.numeric(C_row[2+seg_n])>independence_base_threshold))){if(bi!=1){indB<-1}}
+  # Vectorized calculations
+  for(i in seq_along(tables_cleaned)){
+    A_row <- ab_rows_cache[[i]]$A
+    C_row <- ab_rows_cache[[i]]$C
+    
+    if (nrow(A_row) == 0 || nrow(C_row) == 0) next
+    
+    for(j in 1:seg_n){
+      # Safe numeric conversion for this segment
+      A_hi <- safe_as_numeric(A_row[3 + seg_n + j])
+      C_hi <- safe_as_numeric(C_row[3 + seg_n + j])
+      A_lo <- safe_as_numeric(A_row[1 + j])
+      C_lo <- safe_as_numeric(C_row[1 + j])
+      A_base <- safe_as_numeric(A_row[2 + seg_n])
+      C_base <- safe_as_numeric(C_row[2 + seg_n])
+      
+      # Check bimodality
+      if (!is.na(A_hi) && !is.na(C_hi) && !is.na(A_lo) && !is.na(C_lo)) {
+        if (A_hi > bimodality_hi_threshold && C_hi > bimodality_hi_threshold && 
+            A_lo > bimodality_low_threshold && C_lo > bimodality_low_threshold) {
+          bi_matrix[i, j] <- 1
+        }
+      }
+      
+      # Check performance
+      if (!is.na(A_hi) && !is.na(C_hi) && !is.na(A_base) && !is.na(C_base)) {
+        if ((A_hi > performance_hi_threshold && C_hi < performance_lo_threshold && A_base > performance_base_threshold) ||
+            (A_hi < performance_lo_threshold && C_hi > performance_hi_threshold && C_base > performance_base_threshold)) {
+          perf_matrix[i, j] <- 1
+        }
+      }
+      
+      # Check independent top
+      if (!is.na(A_hi) && !is.na(C_hi) && !is.na(A_base) && !is.na(C_base)) {
+        if (((A_hi > performance_hi_threshold && A_base > independence_base_threshold) ||
+             (C_hi > performance_hi_threshold && C_base > independence_base_threshold)) && 
+            bi_matrix[i, j] != 1) {
+          indT_matrix[i, j] <- 1
+        }
+      }
+      
+      # Check independent bottom
+      if (!is.na(A_hi) && !is.na(C_hi) && !is.na(A_base) && !is.na(C_base)) {
+        if (((A_hi < performance_lo_threshold && A_base > independence_base_threshold) ||
+             (C_hi < performance_lo_threshold && C_base > independence_base_threshold)) && 
+            bi_matrix[i, j] != 1) {
+          indB_matrix[i, j] <- 1
+        }
+      }
+    }
+  }
 
-        assign(paste0("bi_",j),get(paste0("bi_",j))+bi)
-        assign(paste0("perf_",j),get(paste0("perf_",j))+perf)
-        assign(paste0("indT_",j),get(paste0("indT_",j))+indT)
-        assign(paste0("indB_",j),get(paste0("indB_",j))+indB)
+  # Calculate segment-level sums
+  bi_1 <- sum(bi_matrix[, 1]); perf_1 <- sum(perf_matrix[, 1])
+  indT_1 <- sum(indT_matrix[, 1]); indB_1 <- sum(indB_matrix[, 1])
+  
+  if (seg_n >= 2) {
+    bi_2 <- sum(bi_matrix[, 2]); perf_2 <- sum(perf_matrix[, 2])
+    indT_2 <- sum(indT_matrix[, 2]); indB_2 <- sum(indB_matrix[, 2])
+  } else {
+    bi_2 <- 0; perf_2 <- 0; indT_2 <- 0; indB_2 <- 0
+  }
+  
+  if (seg_n >= 3) {
+    bi_3 <- sum(bi_matrix[, 3]); perf_3 <- sum(perf_matrix[, 3])
+    indT_3 <- sum(indT_matrix[, 3]); indB_3 <- sum(indB_matrix[, 3])
+  } else {
+    bi_3 <- 0; perf_3 <- 0; indT_3 <- 0; indB_3 <- 0
+  }
+  
+  if (seg_n >= 4) {
+    bi_4 <- sum(bi_matrix[, 4]); perf_4 <- sum(perf_matrix[, 4])
+    indT_4 <- sum(indT_matrix[, 4]); indB_4 <- sum(indB_matrix[, 4])
+  } else {
+    bi_4 <- 0; perf_4 <- 0; indT_4 <- 0; indB_4 <- 0
+  }
+  
+  if (seg_n >= 5) {
+    bi_5 <- sum(bi_matrix[, 5]); perf_5 <- sum(perf_matrix[, 5])
+    indT_5 <- sum(indT_matrix[, 5]); indB_5 <- sum(indB_matrix[, 5])
+  } else {
+    bi_5 <- 0; perf_5 <- 0; indT_5 <- 0; indB_5 <- 0
+  }
 
-        if(bi==0 && (perf==1||indT==1||indB==1)){
-           temp_1<-get(paste0("seg",j,"_diff"))
-           assign(paste0("seg",j,"_diff"),temp_1+1)
-           if(flag_1==0){diffTB<-diffTB+1; flag_1<-1}
-        }                
-    } 
-}
+  # Calculate seg_diff metrics
+  seg_diff <- integer(seg_n)
+  diffTB <- 0
+  for(j in 1:seg_n){
+    for(i in 1:n_tables){
+      if (bi_matrix[i, j] == 0 && (perf_matrix[i, j] == 1 || indT_matrix[i, j] == 1 || indB_matrix[i, j] == 1)) {
+        seg_diff[j] <- seg_diff[j] + 1
+        if (!seg_diff_flags[i, j]) {
+          diffTB <- diffTB + 1
+          seg_diff_flags[i, j] <- TRUE
+        }
+        break
+      }
+    }
+  }
+  
+  seg1_diff <- if (seg_n >= 1) seg_diff[1] else 0
+  seg2_diff <- if (seg_n >= 2) seg_diff[2] else 0
+  seg3_diff <- if (seg_n >= 3) seg_diff[3] else 0
+  seg4_diff <- if (seg_n >= 4) seg_diff[4] else 0
+  seg5_diff <- if (seg_n >= 5) seg_diff[5] else 0
 
-# ============================================================
-# Objective Function (OF_*) metrics — dynamic extraction
-# ============================================================
+  cat("[RULES] ✅ Segment differentiation complete\n")
+
+  # ============================================================
+  # Objective Function (OF_*) metrics — dynamic extraction
+  # ============================================================
 
   extract_of_metrics <- function(tbl, seg_n) {
     result <- list(
@@ -231,309 +326,238 @@ for(j in 1:seg_n){
       diff_min = 0
     )
 
-    if (is.null(tbl) || !nrow(tbl) || !ncol(tbl)) {
-      cat("  [OF_EXTRACT] Skipping: empty table\n")
-      return(result)
-    }
+    if (is.null(tbl) || !nrow(tbl) || !ncol(tbl)) return(result)
 
-    # Remove completely empty rows
     tbl <- tbl[rowSums(is.na(tbl)) != ncol(tbl), , drop = FALSE]
-    if (!nrow(tbl)) {
-      cat("  [OF_EXTRACT] Skipping: no non-empty rows\n")
-      return(result)
-    }
+    if (nrow(tbl) <= 4) return(result)
 
-    # Convert all columns to numeric
-    tbl_num <- as.data.frame(lapply(tbl, function(col) {
-      suppressWarnings(as.numeric(as.character(col)))
-    }), stringsAsFactors = FALSE)
+    # Drop header rows (first 3 rows)
+    drop_count <- min(3, nrow(tbl) - 1)
+    if (drop_count > 0) tbl <- tbl[-seq_len(drop_count), , drop = FALSE]
+    if (nrow(tbl) <= 1) return(result)
+
+    # Drop last row (totals)
+    tbl <- tbl[-nrow(tbl), , drop = FALSE]
+    if (!nrow(tbl)) return(result)
+
+    # Convert to numeric
+    tbl[] <- lapply(tbl, function(col) suppressWarnings(as.numeric(as.character(col))))
+    if (all(vapply(tbl, function(col) all(is.na(col)), logical(1)))) return(result)
+
+    # First row contains weights
+    weights <- suppressWarnings(as.numeric(tbl[1, ]))
+    if (all(is.na(weights))) return(result)
+
+    values <- numeric(0)
+    upper_bound <- min(seg_n + 1, nrow(tbl))
     
-    if (!ncol(tbl_num)) {
-      cat("  [OF_EXTRACT] Skipping: no columns after numeric conversion\n")
-      return(result)
+    # Calculate weighted average for each segment column
+    for (idx in 2:upper_bound) {
+      row_vals <- suppressWarnings(as.numeric(tbl[idx, ]))
+      if (all(is.na(row_vals))) next
+
+      valid <- !is.na(row_vals) & !is.na(weights)
+      if (!any(valid)) next
+
+      row_vals_valid <- row_vals[valid]
+      weights_valid <- weights[valid]
+      weight_sum <- sum(weights_valid)
+
+      if (is.na(weight_sum) || !is.finite(weight_sum) || weight_sum == 0) {
+        sp_v <- mean(row_vals_valid, na.rm = TRUE)
+      } else {
+        sp_v <- sum(weights_valid * row_vals_valid) / weight_sum
+      }
+
+      values <- c(values, sp_v)
     }
 
-    # Skip first column if it's all NA (likely labels)
-    numeric_data <- tbl_num
-    if (ncol(tbl_num) > 1 && all(is.na(tbl_num[[1]]))) {
-      numeric_data <- tbl_num[, -1, drop = FALSE]
-      cat("  [OF_EXTRACT] Dropped first column (all NA)\n")
-    }
+    if (!length(values)) return(result)
 
-    if (!ncol(numeric_data)) {
-      cat("  [OF_EXTRACT] Skipping: no data columns remaining\n")
-      return(result)
-    }
+    values <- values[!is.na(values)]
+    if (!length(values)) return(result)
 
-    # Extract segment columns (should be first seg_n columns)
-    seg_cols <- seq_len(min(seg_n, ncol(numeric_data)))
-    seg_data <- numeric_data[, seg_cols, drop = FALSE]
-    
-    if (!nrow(seg_data)) {
-      cat("  [OF_EXTRACT] Skipping: no rows in segment data\n")
-      return(result)
-    }
-
-    cat(sprintf("  [OF_EXTRACT] Processing %d column(s) x %d row(s)\n", ncol(seg_data), nrow(seg_data)))
-
-    # Calculate mean for each segment column
-    values <- vapply(seg_data, function(col) {
-      valid_vals <- col[!is.na(col) & is.finite(col)]
-      if (length(valid_vals) == 0) return(NA_real_)
-      mean(valid_vals)
-    }, numeric(1))
-
-    valid_values <- values[is.finite(values)]
-    if (!length(valid_values)) {
-      cat("  [OF_EXTRACT] Warning: no finite values after aggregation\n")
-      return(result)
-    }
-
-    cat(sprintf("  [OF_EXTRACT] Extracted %d segment values: %s\n", 
-                length(valid_values), 
-                paste(round(valid_values, 2), collapse = ", ")))
-
-    # Format display string
+    # Format values
     format_values <- function(vals) {
-      formatted <- format(round(vals, 2), trim = TRUE, scientific = FALSE)
+      if (!length(vals)) return("-")
+      formatted <- sprintf("%.2f", vals)
+      formatted <- sub("0+$", "", formatted)
+      formatted <- sub("\\.$", "", formatted)
       paste(formatted, collapse = " | ")
     }
 
-    result$values <- valid_values
-    result$values_display <- format_values(valid_values)
-
-    # Calculate max/min differences
-    if (length(valid_values) > 1) {
-      diffs <- abs(utils::combn(valid_values, 2, diff))
-      diffs <- diffs[is.finite(diffs)]
-
-      if (length(diffs)) {
-        result$diff_max <- max(diffs)
-        result$diff_min <- min(diffs)
-        cat(sprintf("  [OF_EXTRACT] Differences: max=%.2f, min=%.2f\n", result$diff_max, result$diff_min))
-      }
+    result$values <- values
+    result$values_display <- format_values(values)
+    
+    if (length(values) <= 1) {
+      result$diff_max <- 0
+      result$diff_min <- 0
+      return(result)
     }
+
+    # Calculate differences
+    pairwise_differences <- outer(values, values, FUN = function(x, y) abs(x - y))
+    result$diff_max <- suppressWarnings(max(pairwise_differences, na.rm = TRUE))
+    diffs <- pairwise_differences[lower.tri(pairwise_differences)]
+    diffs <- diffs[!is.na(diffs) & diffs != 0]
+    result$diff_min <- if (length(diffs)) suppressWarnings(min(diffs, na.rm = TRUE)) else 0
+    
+    if (!is.finite(result$diff_max)) result$diff_max <- 0
+    if (!is.finite(result$diff_min)) result$diff_min <- 0
 
     result
   }
-  of_metrics <- list()
-
-  normalize_metric_key <- function(val) {
-    if (is.null(val) || !length(val)) return(NA_character_)
-    
-    key <- trimws(as.character(val))
-    if (!nzchar(key)) return(NA_character_)
-    
-    # Replace all non-alphanumeric (except underscore) with underscore
-    key <- gsub("[^A-Za-z0-9_]", "_", key)
-    # Collapse multiple underscores
-    key <- gsub("_+", "_", key)
-    # Remove leading/trailing underscores
-    key <- gsub("^_+|_+$", "", key)
-    # Convert to uppercase
-    key <- toupper(key)
-    
-    # Auto-add underscore if format is "OFxxx" instead of "OF_xxx"
-    if (grepl("^OF[A-Z0-9]", key) && !grepl("^OF_", key)) {
-      key <- sub("^OF", "OF_", key)
-    }
-    
-    # Must start with OF_
-    if (!grepl("^OF_", key)) return(NA_character_)
-    
-    cat(sprintf("  [NORMALIZE_KEY] '%s' -> '%s'\n", val, key))
-    key
-  }
 
   cat("\n[OF_METRICS] Scanning", length(tables_ori), "tables for OF_ metrics...\n")
-  
+  of_metrics <- list()
+
   for (tbl_idx in seq_along(tables_ori)) {
     tbl <- tables_ori[[tbl_idx]]
+    header_val <- tbl[1, 1]
+    if (!is.character(header_val) || !length(header_val)) next
     
-    # Gather candidate metric names from first few cells of first column
-    candidates <- c(tbl[1, 1])
-    if (nrow(tbl) >= 2) {
-      first_col <- as.character(unlist(tbl[seq_len(min(3, nrow(tbl))), 1]))
-      candidates <- c(candidates, first_col)
+    # Look for OF_ pattern
+    match_loc <- regexpr("OF_[A-Za-z0-9_]+", header_val, ignore.case = TRUE)
+    if (match_loc[1] == -1) next
+    
+    metric_name <- substr(header_val, match_loc[1], match_loc[1] + attr(match_loc, "match.length") - 1)
+
+    # Normalize metric key
+    metric_key <- gsub("[^A-Za-z0-9_]", "", metric_name)
+    metric_key <- gsub("_+", "_", metric_key)
+    metric_key <- sub("_$", "", metric_key)
+    metric_key <- sub("^_", "", metric_key)
+    if (!nchar(metric_key)) next
+    
+    metric_key <- toupper(metric_key)
+    if (grepl("^OF[A-Z0-9]", metric_key) && !grepl("^OF_", metric_key)) {
+      metric_key <- sub("^OF", "OF_", metric_key)
     }
-    candidates <- unique(candidates[!is.na(candidates) & nzchar(as.character(candidates))])
+    if (!grepl("^OF_", metric_key)) next
 
-    # Try to find a valid OF_ metric name
-    metric_key <- NA_character_
-    for (candidate in candidates) {
-      normalized <- normalize_metric_key(candidate)
-      if (!is.na(normalized)) {
-        metric_key <- normalized
-        break
-      }
-    }
-
-    if (is.na(metric_key)) {
-      # Not an OF_ metric table
-      next
-    }
-
-    cat(sprintf("[OF_METRICS] Table %d: Found metric '%s'\n", tbl_idx, metric_key))
-
-    # Extract base key (remove suffixes like _VALUES, _DIFF, etc.)
+    # Extract base key
     base_key <- sub("(_DIFF.*|_VAL(UES)?|_VALUE.*|_MEAN.*|_MIN.*|_MAX.*)$", "", metric_key)
     base_key <- sub("_+$", "", base_key)
     if (!nchar(base_key)) base_key <- metric_key
-    
-    # Skip if already processed this base metric
-    if (base_key %in% names(of_metrics)) {
-      cat(sprintf("  [OF_METRICS] Skipping duplicate base_key '%s'\n", base_key))
-      next
-    }
+    if (base_key %in% names(of_metrics)) next
 
-    # Extract metrics from table
-    cat(sprintf("[OF_METRICS] Extracting metrics for '%s'...\n", base_key))
+    cat(sprintf("[OF_METRICS] Table %d: Found metric '%s'\n", tbl_idx, base_key))
+    
+    # Extract metrics
     metrics <- extract_of_metrics(tbl, seg_n)
     of_metrics[[base_key]] <- metrics
     
     cat(sprintf("[OF_METRICS] Stored: %s_VALUES = '%s'\n", base_key, metrics$values_display))
   }
-  
+
   cat(sprintf("\n[OF_METRICS] Total OF_ metrics found: %d\n", length(of_metrics)))
-  if (length(of_metrics) > 0) {
-    cat("[OF_METRICS] Metric names:", paste(names(of_metrics), collapse = ", "), "\n")
-  }
 
-# Check for bimodality across cleaned vars
-bi_n=0
-for(i in 1:length(tables_cleaned)){
+  # ============================================================
+  # Check for bimodality across cleaned vars
+  # ============================================================
+  bi_n <- 0
+  for(i in 1:length(tables_cleaned)){
     for(j in 1:seg_n){
-        d1<-tables_cleaned[[i]]
-        A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row))), ]
-        C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row))), ]
-        if((as.numeric(A_row[3+seg_n+j])>bimodality_hi_threshold)&&(as.numeric(C_row[3+seg_n+j])>bimodality_hi_threshold)&&
-           (as.numeric(A_row[1+j])>bimodality_low_threshold)&&(as.numeric(C_row[1+j])>bimodality_low_threshold)){
-           bi_n<-bi_n+1
-           break}
-        }
-    }
-final_bi_n <-  bi_n
-bi_n_perc<- bi_n/ proper_bucketted_vars
-n_size_table<-as.data.frame(n_size_table)
-colnames(n_size_table)<-n_size_table[1,]
-n_size_table<-n_size_table[-1,]
-
-# ============================================================
-# SAFE: Check for bimodality among input variables
-# ============================================================
-bi_n_input <- 0
-
-if (length(tables_cleaned_input) == 0) {
-  cat("⚠️ WARNING: No valid input tables found for bimodality check.\n")
-} else {
-  for (i in seq_along(tables_cleaned_input)) {
-    d1 <- tables_cleaned_input[[i]]
-    # Validate that table has enough columns
-    if (ncol(d1) < (3 + 2 * seg_n)) {
-      cat("⚠️ Skipping table", i, "- insufficient columns (", ncol(d1), ")\n")
-      next
-    }
-    for (j in 1:seg_n) {
-      A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row))), , drop = FALSE]
-      C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row))), , drop = FALSE]
-      if (nrow(A_row) == 0 || nrow(C_row) == 0) next
-
-      # Convert safely to numeric
-      A_hi <- suppressWarnings(as.numeric(A_row[3 + seg_n + j]))
-      C_hi <- suppressWarnings(as.numeric(C_row[3 + seg_n + j]))
-      A_lo <- suppressWarnings(as.numeric(A_row[1 + j]))
-      C_lo <- suppressWarnings(as.numeric(C_row[1 + j]))
-
-      # Skip if any conversion failed
-      if (any(is.na(c(A_hi, C_hi, A_lo, C_lo)))) next
-
-      if ((A_hi > bimodality_hi_threshold) && (C_hi > bimodality_hi_threshold) &&
-          (A_lo > bimodality_low_threshold) && (C_lo > bimodality_low_threshold)) {
-        bi_n_input <- bi_n_input + 1
+      if (bi_matrix[i, j] == 1) {
+        bi_n <- bi_n + 1
         break
       }
     }
   }
-}
+  final_bi_n <-  bi_n
+  bi_n_perc <- bi_n / proper_bucketted_vars
+  
+  n_size_table <- as.data.frame(n_size_table)
+  colnames(n_size_table) <- n_size_table[1,]
+  n_size_table <- n_size_table[-1,]
 
-# Ensure final output is never NULL or empty
-if (is.null(bi_n_input) || length(bi_n_input) == 0 || is.na(bi_n_input)) {
+  # ============================================================
+  # Check for bimodality among input variables
+  # ============================================================
   bi_n_input <- 0
-}
-final_bi_n_input <- bi_n_input
-cat("✅ final_bi_n_input =", final_bi_n_input, "\n")
 
-
-# ============================================================
-# NEW SECTION: Input Performance Coverage Metrics
-# ============================================================
-input_perf_seg_covered <- 0
-input_perf_flag <- 0
-input_perf_minseg <- 0
-input_perf_maxseg <- 0
-
-if (length(tables_cleaned_input) > 0) {
-  covered_by_segment <- integer(seg_n)
-  perf_count_by_segment <- integer(seg_n)
-  for (j in 1:seg_n) {
-    covered <- FALSE
-    perf_count <- 0
+  if (length(tables_cleaned_input) == 0) {
+    cat("⚠️ WARNING: No valid input tables found for bimodality check.\n")
+  } else {
     for (i in seq_along(tables_cleaned_input)) {
       d1 <- tables_cleaned_input[[i]]
-      A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row))), ]
-      C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row))), ]
-      if (nrow(A_row)==0||nrow(C_row)==0) next
-      if (ncol(A_row)<(3+seg_n+j)||ncol(C_row)<(3+seg_n+j)) next
-      A_hi <- as.numeric(A_row[3+seg_n+j])
-      C_hi <- as.numeric(C_row[3+seg_n+j])
-      A_base <- as.numeric(A_row[2+seg_n])
-      C_base <- as.numeric(C_row[2+seg_n])
-      if (!any(is.na(c(A_hi, C_hi, A_base, C_base)))) {
-        if (((A_hi > performance_hi_threshold && C_hi < performance_lo_threshold && A_base > performance_base_threshold) ||
-             (A_hi < performance_lo_threshold && C_hi > performance_hi_threshold && C_base > performance_base_threshold))) {
-          covered <- TRUE
-          perf_count <- perf_count + 1
+      if (ncol(d1) < (3 + 2 * seg_n)) {
+        next
+      }
+      for (j in 1:seg_n) {
+        A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row, fixed = TRUE))), , drop = FALSE]
+        C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row, fixed = TRUE))), , drop = FALSE]
+        if (nrow(A_row) == 0 || nrow(C_row) == 0) next
+
+        A_hi <- suppressWarnings(as.numeric(A_row[3 + seg_n + j]))
+        C_hi <- suppressWarnings(as.numeric(C_row[3 + seg_n + j]))
+        A_lo <- suppressWarnings(as.numeric(A_row[1 + j]))
+        C_lo <- suppressWarnings(as.numeric(C_row[1 + j]))
+
+        if (any(is.na(c(A_hi, C_hi, A_lo, C_lo)))) next
+
+        if ((A_hi > bimodality_hi_threshold) && (C_hi > bimodality_hi_threshold) && 
+            (A_lo > bimodality_low_threshold) && (C_lo > bimodality_low_threshold)) {
+          bi_n_input <- bi_n_input + 1
+          break
         }
       }
     }
-    covered_by_segment[j] <- as.integer(covered)
-    perf_count_by_segment[j] <- perf_count
   }
-  input_perf_seg_covered <- sum(covered_by_segment, na.rm = TRUE)
-  input_perf_flag <- as.integer(input_perf_seg_covered == seg_n)
-  input_perf_minseg <- min(perf_count_by_segment, na.rm = TRUE)
-  input_perf_maxseg <- max(perf_count_by_segment, na.rm = TRUE)
-}
-# ============================================================
-# FINAL BI_N_INPUT SAFETY + DEBUG LOGGING
-# ============================================================
-cat("\n[DEBUG] Checking final_bi_n_input state before output...\n")
 
-# Explicitly handle missing or invalid final_bi_n_input
-if (!exists("final_bi_n_input")) {
-  cat("❌ final_bi_n_input variable does NOT exist at all in environment!\n")
-  final_bi_n_input <- NA_real_
-} else if (is.null(final_bi_n_input)) {
-  cat("❌ final_bi_n_input is NULL\n")
-  final_bi_n_input <- NA_real_
-} else if (length(final_bi_n_input) == 0) {
-  cat("❌ final_bi_n_input has length 0\n")
-  final_bi_n_input <- NA_real_
-} else if (any(is.na(final_bi_n_input))) {
-  cat("⚠️ final_bi_n_input contains NA values\n")
-} else {
-  cat("✅ final_bi_n_input exists with value:", final_bi_n_input, "\n")
-}
+  final_bi_n_input <- if (is.null(bi_n_input) || length(bi_n_input) == 0 || is.na(bi_n_input)) 0 else bi_n_input
 
-# Ensure numeric type for consistency
-if (!is.numeric(final_bi_n_input)) {
-  cat("⚠️ final_bi_n_input not numeric, coercing...\n")
-  final_bi_n_input <- suppressWarnings(as.numeric(final_bi_n_input))
-  if (any(is.na(final_bi_n_input))) final_bi_n_input <- 0
-}
-# ============================================================
-# FINAL OUTPUT
-# ============================================================
+  # ============================================================
+  # Input Performance Coverage Metrics
+  # ============================================================
+  input_perf_seg_covered <- 0
+  input_perf_flag <- 0
+  input_perf_minseg <- 0
+  input_perf_maxseg <- 0
+
+  if (length(tables_cleaned_input) > 0) {
+    covered_by_segment <- integer(seg_n)
+    perf_count_by_segment <- integer(seg_n)
+    
+    for (j in 1:seg_n) {
+      covered <- FALSE
+      perf_count <- 0
+      
+      for (i in seq_along(tables_cleaned_input)) {
+        d1 <- tables_cleaned_input[[i]]
+        A_row <- d1[apply(d1, 1, function(row) any(grepl("A_", row, fixed = TRUE))), ]
+        C_row <- d1[apply(d1, 1, function(row) any(grepl("C_", row, fixed = TRUE))), ]
+        
+        if (nrow(A_row)==0||nrow(C_row)==0) next
+        if (ncol(A_row)<(3+seg_n+j)||ncol(C_row)<(3+seg_n+j)) next
+        
+        A_hi <- as.numeric(A_row[3+seg_n+j])
+        C_hi <- as.numeric(C_row[3+seg_n+j])
+        A_base <- as.numeric(A_row[2+seg_n])
+        C_base <- as.numeric(C_row[2+seg_n])
+        
+        if (!any(is.na(c(A_hi, C_hi, A_base, C_base)))) {
+          if (((A_hi > performance_hi_threshold && C_hi < performance_lo_threshold && A_base > performance_base_threshold) ||
+               (A_hi < performance_lo_threshold && C_hi > performance_hi_threshold && C_base > performance_base_threshold))) {
+            covered <- TRUE
+            perf_count <- perf_count + 1
+          }
+        }
+      }
+      
+      covered_by_segment[j] <- as.integer(covered)
+      perf_count_by_segment[j] <- perf_count
+    }
+    
+    input_perf_seg_covered <- sum(covered_by_segment, na.rm = TRUE)
+    input_perf_flag <- as.integer(input_perf_seg_covered == seg_n)
+    input_perf_minseg <- min(perf_count_by_segment, na.rm = TRUE)
+    input_perf_maxseg <- max(perf_count_by_segment, na.rm = TRUE)
+  }
+
+  # ============================================================
+  # FINAL OUTPUT - UPPERCASE NAMING FOR COMPATIBILITY
+  # ============================================================
   normalize_metric_value <- function(x, fallback = NA_real_) {
     if (is.null(x) || !length(x)) return(fallback)
     x_val <- x[1]
@@ -550,6 +574,7 @@ if (!is.numeric(final_bi_n_input)) {
     x_val
   }
 
+  # CRITICAL: Use UPPERCASE for OF_ metric names to match Iteration_loop.R expectations
   of_output <- list()
   metric_keys <- sort(names(of_metrics))
   for (metric_key in metric_keys) {
@@ -558,51 +583,32 @@ if (!is.numeric(final_bi_n_input)) {
     diff_max <- normalize_metric_value(round(metric$diff_max, 2), 0)
     diff_min <- normalize_metric_value(round(metric$diff_min, 2), 0)
 
+    # UPPERCASE suffixes: VALUES, MAXDIFF, MINDIFF
     of_output[[paste0(metric_key, "_VALUES")]] <- display
     of_output[[paste0(metric_key, "_MAXDIFF")]] <- diff_max
     of_output[[paste0(metric_key, "_MINDIFF")]] <- diff_min
   }
 
-  if(solo==TRUE){
-    ITR_analysis_output <- c(
-      list(
-        bi_n_perc=bi_n_perc,final_bi_n=final_bi_n,proper_bucketted_vars=proper_bucketted_vars,
-        seg_n=seg_n,Max_n_size=Max_n_size,Max_n_size_perc=Max_n_size_perc,Min_n_size=Min_n_size,
-        Min_n_size_perc=Min_n_size_perc,prob_95=prob_95,prob_90=prob_90,prob_80=prob_80,prob_75=prob_75,
-        prob_low_50=prob_low_50,seg_n_sizes=seg_n_sizes,solo=solo,sd_rov=sd_rov,range_rov=range_rov,
-        n_size_table=n_size_table, seg1_diff=seg1_diff, seg2_diff=seg2_diff, seg3_diff=seg3_diff,
-        seg4_diff=seg4_diff, seg5_diff=seg5_diff, bi_1=bi_1, perf_1=perf_1, indT_1=indT_1, indB_1=indB_1,
-        bi_2=bi_2, perf_2=perf_2, indT_2=indT_2, indB_2=indB_2, bi_3=bi_3, perf_3=perf_3, indT_3=indT_3,
-        indB_3=indB_3, bi_4=bi_4, perf_4=perf_4, indT_4=indT_4, indB_4=indB_4, bi_5=bi_5, perf_5=perf_5,
-        indT_5=indT_5, indB_5=indB_5
-      ),
-      of_output,
-      list(
-        final_bi_n_input=final_bi_n_input,
-        input_perf_seg_covered=input_perf_seg_covered,input_perf_flag=input_perf_flag,
-        input_perf_minseg=input_perf_minseg,input_perf_maxseg=input_perf_maxseg
-      )
+  # Build final output
+  ITR_analysis_output <- c(
+    list(
+      bi_n_perc=bi_n_perc, final_bi_n=final_bi_n, proper_bucketted_vars=proper_bucketted_vars,
+      seg_n=seg_n, Max_n_size=Max_n_size, Max_n_size_perc=Max_n_size_perc, Min_n_size=Min_n_size,
+      Min_n_size_perc=Min_n_size_perc, prob_95=prob_95, prob_90=prob_90, prob_80=prob_80, prob_75=prob_75,
+      prob_low_50=prob_low_50, seg_n_sizes=seg_n_sizes, solo=solo, sd_rov=sd_rov, range_rov=range_rov,
+      n_size_table=n_size_table, seg1_diff=seg1_diff, seg2_diff=seg2_diff, seg3_diff=seg3_diff,
+      seg4_diff=seg4_diff, seg5_diff=seg5_diff, bi_1=bi_1, perf_1=perf_1, indT_1=indT_1, indB_1=indB_1,
+      bi_2=bi_2, perf_2=perf_2, indT_2=indT_2, indB_2=indB_2, bi_3=bi_3, perf_3=perf_3, indT_3=indT_3,
+      indB_3=indB_3, bi_4=bi_4, perf_4=perf_4, indT_4=indT_4, indB_4=indB_4, bi_5=bi_5, perf_5=perf_5,
+      indT_5=indT_5, indB_5=indB_5
+    ),
+    of_output,
+    list(
+      final_bi_n_input=final_bi_n_input,
+      input_perf_seg_covered=input_perf_seg_covered, input_perf_flag=input_perf_flag,
+      input_perf_minseg=input_perf_minseg, input_perf_maxseg=input_perf_maxseg
     )
-    return(ITR_analysis_output)
-  } else {
-    ITR_analysis_output <- c(
-      list(
-        bi_n_perc=bi_n_perc,final_bi_n=final_bi_n,proper_bucketted_vars=proper_bucketted_vars,
-        seg_n=seg_n,Max_n_size=Max_n_size,Max_n_size_perc=Max_n_size_perc,Min_n_size=Min_n_size,
-        Min_n_size_perc=Min_n_size_perc,prob_95=prob_95,prob_90=prob_90,prob_80=prob_80,prob_75=prob_75,
-        prob_low_50=prob_low_50,seg_n_sizes=seg_n_sizes,solo=FALSE,sd_rov=sd_rov,range_rov=range_rov,
-        seg1_diff=seg1_diff, seg2_diff=seg2_diff, seg3_diff=seg3_diff, seg4_diff=seg4_diff, seg5_diff=seg5_diff,
-        bi_1=bi_1, perf_1=perf_1, indT_1=indT_1, indB_1=indB_1, bi_2=bi_2, perf_2=perf_2, indT_2=indT_2,
-        indB_2=indB_2, bi_3=bi_3, perf_3=perf_3, indT_3=indT_3, indB_3=indB_3, bi_4=bi_4, perf_4=perf_4,
-        indT_4=indT_4, indB_4=indB_4, bi_5=bi_5, perf_5=perf_5, indT_5=indT_5, indB_5=indB_5
-      ),
-      of_output,
-      list(
-        final_bi_n_input=final_bi_n_input,
-        input_perf_seg_covered=input_perf_seg_covered,input_perf_flag=input_perf_flag,
-        input_perf_minseg=input_perf_minseg,input_perf_maxseg=input_perf_maxseg
-      )
-    )
-    return(ITR_analysis_output)
-  }
+  )
+  
+  return(ITR_analysis_output)
 }
