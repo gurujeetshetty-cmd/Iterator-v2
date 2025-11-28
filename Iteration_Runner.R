@@ -99,23 +99,27 @@ Iteration_running_function <- function(data_path, variables, tracker_path, outpu
    sort_of_columns <- function(cols) {
      if (!length(cols)) return(cols)
 
-     base_keys <- gsub("^(max|min)_", "", cols)
-     base_keys <- sub("_(values|val|diff_max|diff_min|diff)$", "", base_keys, perl = TRUE)
-     base_keys <- toupper(base_keys)
+     base_keys <- gsub("^(MAX|MIN)_", "", toupper(cols))
+     base_keys <- sub("_(VALUES|VAL|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN|DIFF)$", "", base_keys, perl = TRUE)
 
-     metric_type <- ifelse(grepl("^max_", cols), "legacy_max",
-                     ifelse(grepl("^min_", cols), "legacy_min",
-                            sub("^OF_[A-Za-z0-9_]+_", "", cols)))
+     suffix <- sub("^OF_[A-Z0-9_]+_", "", toupper(cols))
+     metric_type <- tolower(suffix)
+
+     metric_type[metric_type == "diff_max"] <- "maxdiff"
+     metric_type[metric_type == "diff_min"] <- "mindiff"
 
      metric_order <- c(
        values = 1L,
        val = 2L,
-       diff_max = 3L,
+       maxdiff = 3L,
        diff = 4L,
-       diff_min = 5L,
+       mindiff = 5L,
        legacy_max = 6L,
        legacy_min = 7L
      )
+
+     metric_type <- ifelse(grepl("^MAX_", cols, ignore.case = TRUE), "legacy_max",
+                     ifelse(grepl("^MIN_", cols, ignore.case = TRUE), "legacy_min", metric_type))
 
      metric_type[metric_type == ""] <- "values"
      metric_type[!(metric_type %in% names(metric_order))] <- "zzz"
@@ -128,7 +132,7 @@ Iteration_running_function <- function(data_path, variables, tracker_path, outpu
    base_add_cols<-c("Ran_Iteration_Flag", "ITR_PATH", "ITR_FILE_NAME", "SUMMARY_TXT_PATH", "SUMMARY_TXT_FILE", "MAX_N_SIZE", "MAX_N_SIZE_PERC", "MIN_N_SIZE", "MIN_N_SIZE_PERC", "SOLUTION_N_SIZE", "PROB_95", "PROB_90", "PROB_80", "PROB_75", "PROB_LESS_THAN_50", "BIMODAL_VARS", "PROPER_BUCKETED_VARS", "BIMODAL_VARS_PERC","ROV_SD", "ROV_RANGE", "seg1_diff", "seg2_diff", "seg3_diff", "seg4_diff", "seg5_diff", "bi_1", "perf_1", "indT_1", "indB_1", "bi_2", "perf_2", "indT_2", "indB_2", "bi_3", "perf_3", "indT_3", "indB_3", "bi_4", "perf_4", "indT_4", "indB_4", "bi_5", "perf_5", "indT_5", "indB_5")
    input_perf_cols<-c("BIMODAL_VARS_INPUT_VARS","INPUT_PERF_SEG_COVERED","INPUT_PERF_FLAG","INPUT_PERF_MINSEG","INPUT_PERF_MAXSEG")
 
-   of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+(_values|_val|_diff(_max|_min)?|_diff)$"
+   of_pattern <- "^((max|min)_)?OF_[A-Za-z0-9_]+(_VALUES|_VAL|_MINDIFF|_MAXDIFF|_DIFF(_MAX|_MIN)?|_DIFF)$"
    existing_of_cols<-names(tracker)[grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(tracker), ignore.case = TRUE)]
    add_cols<-c(base_add_cols, sort_of_columns(unique(existing_of_cols)), input_perf_cols)
    add_cols<-unique(add_cols)

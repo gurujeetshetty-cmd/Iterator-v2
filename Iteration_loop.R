@@ -78,29 +78,30 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
   }
 
   propagate_legacy_of_aliases <- function(df) {
-    canonical_pattern <- "^OF_[A-Za-z0-9_]+_(values|diff_max|diff_min)$"
-    canonical_cols <- names(df)[grepl(canonical_pattern, names(df))]
+    name_upper <- toupper(names(df))
+    canonical_pattern <- "^OF_[A-Z0-9_]+_(VALUES|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN)$"
+    canonical_cols <- names(df)[grepl(canonical_pattern, name_upper)]
     if (!length(canonical_cols)) return(df)
 
     for (col in canonical_cols) {
-      base <- sub("_(values|diff_max|diff_min)$", "", col)
+      col_upper <- toupper(col)
+      base <- sub("_(VALUES|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN)$", "", col_upper)
 
-      if (endsWith(col, "_values")) {
-        aliases <- c(paste0(base, "_val"))
-      } else if (endsWith(col, "_diff_max")) {
-        aliases <- c(paste0(base, "_diff"), paste0("max_", base, "_diff"))
-      } else if (endsWith(col, "_diff_min")) {
-        aliases <- c(paste0("min_", base, "_diff"))
-      } else {
-        next
+      aliases <- character(0)
+      if (endsWith(col_upper, "VALUES")) {
+        aliases <- c(aliases, paste0(base, "_VAL"))
+      }
+      if (endsWith(col_upper, "MAXDIFF") || endsWith(col_upper, "DIFF_MAX")) {
+        aliases <- c(aliases, paste0(base, "_DIFF"), paste0("MAX_", base, "_DIFF"))
+      }
+      if (endsWith(col_upper, "MINDIFF") || endsWith(col_upper, "DIFF_MIN")) {
+        aliases <- c(aliases, paste0("MIN_", base, "_DIFF"))
       }
 
       for (alias in aliases) {
-        if (!alias %in% names(df)) {
-          df[[alias]] <- df[[col]]
-        } else {
-          df[[alias]] <- df[[col]]
-        }
+        existing_idx <- match(alias, toupper(names(df)))
+        target_name <- if (is.na(existing_idx)) alias else names(df)[existing_idx]
+        df[[target_name]] <- df[[col]]
       }
     }
 
@@ -110,23 +111,27 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
   sort_of_columns <- function(cols) {
     if (!length(cols)) return(cols)
 
-    base_keys <- gsub("^(max|min)_", "", cols)
-    base_keys <- sub("_(values|val|diff_max|diff_min|diff)$", "", base_keys, perl = TRUE)
-    base_keys <- toupper(base_keys)
+    base_keys <- gsub("^(MAX|MIN)_", "", toupper(cols))
+    base_keys <- sub("_(VALUES|VAL|MINDIFF|MAXDIFF|DIFF_MAX|DIFF_MIN|DIFF)$", "", base_keys, perl = TRUE)
 
-    metric_type <- ifelse(grepl("^max_", cols), "legacy_max",
-                    ifelse(grepl("^min_", cols), "legacy_min",
-                           sub("^OF_[A-Za-z0-9_]+_", "", cols)))
+    suffix <- sub("^OF_[A-Z0-9_]+_", "", toupper(cols))
+    metric_type <- tolower(suffix)
+
+    metric_type[metric_type == "diff_max"] <- "maxdiff"
+    metric_type[metric_type == "diff_min"] <- "mindiff"
 
     metric_order <- c(
       values = 1L,
       val = 2L,
-      diff_max = 3L,
+      maxdiff = 3L,
       diff = 4L,
-      diff_min = 5L,
+      mindiff = 5L,
       legacy_max = 6L,
       legacy_min = 7L
     )
+
+    metric_type <- ifelse(grepl("^MAX_", cols, ignore.case = TRUE), "legacy_max",
+                    ifelse(grepl("^MIN_", cols, ignore.case = TRUE), "legacy_min", metric_type))
 
     metric_type[metric_type == ""] <- "values"
     metric_type[!(metric_type %in% names(metric_order))] <- "zzz"
@@ -257,7 +262,7 @@ check_and_assign <- function(df, i, col, val, var_name) {
 
     RULES_OP<- RULES_Checker(output_working_dir,paste0(file_run_and_date,"_SUMMARY",".xlsx"),solo)
 
-    of_pattern <- "^(max|min)_OF_[A-Za-z0-9_]+_diff$|^OF_[A-Za-z0-9_]+(_values|_val|_diff(_max|_min)?|_diff)$"
+    of_pattern <- "^((max|min)_)?OF_[A-Za-z0-9_]+(_VALUES|_VAL|_MINDIFF|_MAXDIFF|_DIFF(_MAX|_MIN)?|_DIFF)$"
     of_metric_cols <- names(RULES_OP)[grepl("^((max|min)_)?OF_[A-Za-z0-9_]+", names(RULES_OP), ignore.case = TRUE)]
     of_metric_cols <- sort_of_columns(of_metric_cols)
     if (length(of_metric_cols)) {

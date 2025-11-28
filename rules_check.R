@@ -234,71 +234,47 @@ for(j in 1:seg_n){
     if (is.null(tbl) || !nrow(tbl) || !ncol(tbl)) return(result)
 
     tbl <- tbl[rowSums(is.na(tbl)) != ncol(tbl), , drop = FALSE]
-    if (nrow(tbl) <= 4) return(result)
-
-    drop_count <- min(3, nrow(tbl) - 1)
-    if (drop_count > 0) tbl <- tbl[-seq_len(drop_count), , drop = FALSE]
-    if (nrow(tbl) <= 1) return(result)
-
-    tbl <- tbl[-nrow(tbl), , drop = FALSE]
     if (!nrow(tbl)) return(result)
 
-    tbl[] <- lapply(tbl, function(col) suppressWarnings(as.numeric(as.character(col))))
-    if (all(vapply(tbl, function(col) all(is.na(col)), logical(1)))) return(result)
+    tbl_num <- as.data.frame(lapply(tbl, function(col) suppressWarnings(as.numeric(as.character(col)))), stringsAsFactors = FALSE)
+    if (!ncol(tbl_num)) return(result)
 
-    weights <- suppressWarnings(as.numeric(tbl[1, ]))
-    if (all(is.na(weights))) return(result)
-
-    values <- numeric(0)
-    upper_bound <- min(seg_n + 1, nrow(tbl))
-    for (idx in 2:upper_bound) {
-      row_vals <- suppressWarnings(as.numeric(tbl[idx, ]))
-      if (all(is.na(row_vals))) next
-
-      valid <- !is.na(row_vals) & !is.na(weights)
-      if (!any(valid)) next
-
-      row_vals_valid <- row_vals[valid]
-      weights_valid <- weights[valid]
-      weight_sum <- sum(weights_valid)
-
-      if (is.na(weight_sum) || !is.finite(weight_sum) || weight_sum == 0) {
-        sp_v <- mean(row_vals_valid, na.rm = TRUE)
-      } else {
-        sp_v <- sum(weights_valid * row_vals_valid) / weight_sum
-      }
-
-      values <- c(values, sp_v)
+    numeric_data <- tbl_num
+    if (ncol(tbl_num) > 1 && all(is.na(tbl_num[[1]]))) {
+      numeric_data <- tbl_num[, -1, drop = FALSE]
     }
 
-    if (!length(values)) return(result)
+    if (!ncol(numeric_data)) return(result)
 
-    values <- values[!is.na(values)]
-    if (!length(values)) return(result)
+    seg_cols <- seq_len(min(seg_n, ncol(numeric_data)))
+    seg_data <- numeric_data[, seg_cols, drop = FALSE]
+    if (!nrow(seg_data)) return(result)
+
+    values <- vapply(seg_data, function(col) {
+      if (all(is.na(col))) return(NA_real_)
+      mean(col, na.rm = TRUE)
+    }, numeric(1))
+
+    valid_values <- values[is.finite(values)]
+    if (!length(valid_values)) return(result)
 
     format_values <- function(vals) {
-      if (!length(vals)) return("-")
-      formatted <- sprintf("%.2f", vals)
-      formatted <- sub("0+$", "", formatted)
-      formatted <- sub("\\.$", "", formatted)
+      formatted <- format(round(vals, 2), trim = TRUE, scientific = FALSE)
       paste(formatted, collapse = " | ")
     }
 
-    result$values <- values
-    result$values_display <- format_values(values)
-    if (length(values) <= 1) {
-      result$diff_max <- 0
-      result$diff_min <- 0
-      return(result)
-    }
+    result$values <- valid_values
+    result$values_display <- format_values(valid_values)
 
-    pairwise_differences <- outer(values, values, FUN = function(x, y) abs(x - y))
-    result$diff_max <- suppressWarnings(max(pairwise_differences, na.rm = TRUE))
-    diffs <- pairwise_differences[lower.tri(pairwise_differences)]
-    diffs <- diffs[!is.na(diffs) & diffs != 0]
-    result$diff_min <- if (length(diffs)) suppressWarnings(min(diffs, na.rm = TRUE)) else 0
-    if (!is.finite(result$diff_max)) result$diff_max <- 0
-    if (!is.finite(result$diff_min)) result$diff_min <- 0
+    if (length(valid_values) <= 1) return(result)
+
+    diffs <- abs(utils::combn(valid_values, 2, diff))
+    diffs <- diffs[is.finite(diffs)]
+
+    if (length(diffs)) {
+      result$diff_max <- max(diffs)
+      result$diff_min <- min(diffs)
+    }
 
     result
   }
@@ -506,9 +482,9 @@ if (!is.numeric(final_bi_n_input)) {
     diff_max <- normalize_metric_value(round(metric$diff_max, 2), 0)
     diff_min <- normalize_metric_value(round(metric$diff_min, 2), 0)
 
-    of_output[[paste0(metric_key, "_values")]] <- display
-    of_output[[paste0(metric_key, "_diff_max")]] <- diff_max
-    of_output[[paste0(metric_key, "_diff_min")]] <- diff_min
+    of_output[[paste0(metric_key, "_VALUES")]] <- display
+    of_output[[paste0(metric_key, "_MAXDIFF")]] <- diff_max
+    of_output[[paste0(metric_key, "_MINDIFF")]] <- diff_min
   }
 
   if(solo==TRUE){
