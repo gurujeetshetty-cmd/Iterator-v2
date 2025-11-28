@@ -330,69 +330,80 @@ if(option_summary_only != 1){
   colnames(xtab_output) <- uniq_segs
 
 ##############################################
-print("DD222-6") 
-for (var in xtab_var_rows){
-  
-  uniq_set <- unique(XTab_Data[,var])
-  uniq_set <- uniq_set[!is.na(uniq_set)]
-  uniq_set <- uniq_set[order(uniq_set)]
-  if(length(uniq_set)==0) next;
-  xtab_table_iter <- matrix(NA,length(uniq_set),length(uniq_segs))
-  
-  i=1
-  for(col in uniq_segs[-length(uniq_segs)]){
-    for(row in seq(1,length(uniq_set),1)){
-      xtab_table_iter[row,i] <- sum( as.numeric( XTab_Data[ XTab_Data[,var] == uniq_set[row] & XTab_Data[,xtab_var_col] == col & !is.na(XTab_Data[,var]), 3 ] ) )     
-    }
-    i=i+1
-  }
-  
-  for(row in seq(1,length(uniq_set),1)){
-    xtab_table_iter[row,ncol(xtab_table_iter)] <- sum(xtab_table_iter[row,-ncol(xtab_table_iter)])
-  }
-  
-  for(col in seq(1,ncol(xtab_table_iter),1)){
-    xtab_table_iter[,col] <- xtab_table_iter[,col] / sum(xtab_table_iter[,col])
-  }
-  
-  colnames(xtab_table_iter) <- uniq_segs
-  rownames(xtab_table_iter) <- uniq_set
+print("DD222-6")
 
-  vname <- as.character(XTab_Data_Labels[1,var])
-  dname <- as.character(XTab_Data_Labels[2,var])
-  var_id <- names(XTab_Data)[var]
-  
-  # Check if this is an input segmentation variable and add prefix
-  is_input_var <- var %in% input_seg_var_list
-  if (is_input_var) {
+# Helper: build a clean xtab block for each variable (percent share per segment + metadata rows)
+build_xtab_block <- function(var_idx, uniq_segs, seg_weights) {
+  var_values <- XTab_Data[, var_idx]
+  uniq_set <- sort(unique(var_values[!is.na(var_values)]))
+  if (!length(uniq_set)) return(NULL)
+
+  base_counts <- sapply(uniq_segs[-length(uniq_segs)], function(seg) {
+    vapply(uniq_set, function(val) {
+      sum(as.numeric(XTab_Data[XTab_Data[, var_idx] == val &
+                                XTab_Data[, xtab_var_col] == seg &
+                                !is.na(XTab_Data[, var_idx]), 3]), na.rm = TRUE)
+    }, numeric(1))
+  })
+
+  if (is.null(dim(base_counts))) {
+    base_counts <- matrix(base_counts, ncol = 1)
+  }
+  base_counts <- as.matrix(base_counts)
+  base_counts <- cbind(base_counts, rowSums(base_counts))
+  colnames(base_counts) <- uniq_segs
+  rownames(base_counts) <- uniq_set
+
+  col_totals <- colSums(base_counts, na.rm = TRUE)
+  col_totals[col_totals == 0] <- NA
+  xtab_pct <- sweep(base_counts, 2, col_totals, FUN = "/")
+  xtab_pct[!is.finite(xtab_pct)] <- 0
+
+  vname <- as.character(XTab_Data_Labels[1, var_idx])
+  dname <- as.character(XTab_Data_Labels[2, var_idx])
+  var_id <- names(XTab_Data)[var_idx]
+  if (var_idx %in% input_seg_var_list) {
     var_id <- paste0("00_SEGM_", var_id)
   }
-  
-  # Use description if available, otherwise use vname
   var_description <- ifelse(nzchar(dname), dname, vname)
 
-  empty_col <- rep("",length(uniq_set));
-  
-  chisq_stat <- wtd.chi.sq(XTab_Data[,var],XTab_Data[,xtab_var_col],weight=as.numeric(XTab_Data[,3]),na.rm=TRUE)
-  chisq_df <- ( length(unique(XTab_Data[,var])) - 1)  * ( length(unique(XTab_Data[,xtab_var_col])) - 1) 
-  chisq_stat <- chisq_stat[[1]] / 1
-  rov_stat <- (chisq_stat - chisq_df) / sqrt(2*chisq_df)
-  
-  empty_row <- rep(NA,ncol(xtab_table_iter))
+  chisq_stat <- wtd.chi.sq(XTab_Data[, var_idx], XTab_Data[, xtab_var_col],
+                           weight = as.numeric(XTab_Data[, 3]), na.rm = TRUE)
+  chisq_df <- (length(unique(XTab_Data[, var_idx])) - 1) *
+    (length(unique(XTab_Data[, xtab_var_col])) - 1)
+  chisq_val <- if (length(chisq_stat)) chisq_stat[[1]] else NA_real_
+  rov_stat <- if (is.finite(chisq_val) && chisq_df > 0) {
+    (chisq_val - chisq_df) / sqrt(2 * chisq_df)
+  } else { NA_real_ }
 
-  # 5 header rows: empty, var_id, var_desc, vname (for compatibility), ROV
-  xtab_table_iter <- rbind(empty_row,empty_row,empty_row,empty_row,empty_row,xtab_table_iter)
-  rownames(xtab_table_iter)[1] <- c("empty_row")
-  }
-  
-  num_msg_pct[col+1] <- sum(num_msg_cnt) / sum(SEG_N_WTD/2)
-  
-  colnames(xtab_table_iter) <- colnames(xtab_output)
-  xtab_output <- rbind(as.matrix(xtab_output),as.matrix(xtab_table_iter),t(as.matrix(num_msg_pct)))
-  rownames(xtab_output)[nrow(xtab_output)] <- "%_MSG"
-  
-}  ###-END-FOR-###
-print("DD222-7") 
+  header_rows <- matrix("", nrow = 5, ncol = ncol(xtab_pct))
+  header_rows[2, 1] <- var_id
+  header_rows[3, 1] <- var_description
+  header_rows[4, 1] <- vname
+  header_rows[5, 1] <- paste0("ROV=", round(rov_stat, 3))
+
+  missing_counts <- vapply(uniq_segs[-length(uniq_segs)], function(seg) {
+    sum(as.numeric(XTab_Data[XTab_Data[, xtab_var_col] == seg &
+                              is.na(var_values), 3]), na.rm = TRUE)
+  }, numeric(1))
+  total_missing <- sum(missing_counts)
+  denom <- seg_weights
+  denom[denom == 0] <- NA
+  missing_pct <- c(missing_counts / denom[-length(denom)], total_missing / denom[length(denom)])
+
+  block <- rbind(header_rows, xtab_pct, missing_pct)
+  rownames(block)[nrow(block)] <- "%_MSG"
+  colnames(block) <- uniq_segs
+  block
+}
+
+for (var in xtab_var_rows) {
+  xtab_block <- build_xtab_block(var, uniq_segs, SEG_N_WTD)
+  if (is.null(xtab_block)) next
+  xtab_output <- rbind(as.matrix(xtab_output), as.matrix(xtab_block))
+}
+
+print("DD222-7")
 ##############################################
 
 for(col in seq(1,ncol(xtab_output)-1,1)){
