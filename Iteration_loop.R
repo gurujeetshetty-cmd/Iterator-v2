@@ -197,20 +197,23 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
 
   print(nrow(input_data))
   for (i in 1:nrow(input_data)) {
-    if(input_data$Ran_Iteration_Flag[input_data$Iteration==i]==1){next}
+    iteration_value <- input_data$Iteration[i]
+    iteration_value <- ifelse(is.na(iteration_value) || !is.finite(iteration_value), i, iteration_value)
+
+    if (isTRUE(input_data$Ran_Iteration_Flag[i] == 1)) {next}
     processed_iterations <- processed_iterations + 1L
     safe_progress(
       processed_iterations - 1L,
       total_iterations,
-      iteration = i,
+      iteration = iteration_value,
       status = sprintf(
         "Running iteration %d (%d of %d)...",
-        i,
+        iteration_value,
         processed_iterations,
         total_iterations
       )
     )
-    iteration <- input_data$Iteration[i]
+    iteration <- iteration_value
     combination <- unlist(strsplit(input_data$Combination[i], ";"))
     print(combination)
     file_run_and_date <- paste0(File_name, iteration)
@@ -231,29 +234,34 @@ run_iterations <- function(comb_data,input_working_dir,output_working_dir,input_
     )
 
     # === DEBUG WRAPPER: detect which RULES_OP element is empty or invalid ===
-check_and_assign <- function(df, i, col, val, var_name) {
+check_and_assign <- function(df, row_index, iteration_value, col, val, var_name) {
   if (!col %in% colnames(df)) {
     df[[col]] <- NA
   }
   # Detect empty or invalid values
   if (is.null(val) || length(val) == 0) {
-    cat("❌ ERROR @ Iteration", i, "| Variable", var_name, "is NULL or length 0\n")
+    cat("❌ ERROR @ Iteration", iteration_value, "| Variable", var_name, "is NULL or length 0\n")
     return(df)
   }
   if (all(is.na(val))) {
-    cat("⚠️ WARNING @ Iteration", i, "| Variable", var_name, "is all NA\n")
+    cat("⚠️ WARNING @ Iteration", iteration_value, "| Variable", var_name, "is all NA\n")
   }
   if (is.list(val)) {
-    cat("⚠️ WARNING @ Iteration", i, "| Variable", var_name, "is a list of length", length(val), "\n")
+    cat("⚠️ WARNING @ Iteration", iteration_value, "| Variable", var_name, "is a list of length", length(val), "\n")
     print(val)
   }
   # Print data type and value for QC
   cat("✅ Assigning", var_name, "=", paste(val, collapse=", "), 
       "| Type:", typeof(val), "| Length:", length(val), "\n")
   
+  target_rows <- which(df$Iteration == iteration_value)
+  if (!length(target_rows)) {
+    target_rows <- row_index
+  }
+
   # Perform safe assignment
   tryCatch({
-    df[[col]][df$Iteration == i] <- val
+    df[[col]][target_rows] <- val
   }, error = function(e) {
     cat("💥 CRASH during assignment of", var_name, ":", conditionMessage(e), "\n")
   })
@@ -271,8 +279,8 @@ check_and_assign <- function(df, i, col, val, var_name) {
 
     # === Begin debug-safe assignments ===
 
-    input_data <- check_and_assign(input_data, i, "ITR_PATH", output_working_dir, "ITR_PATH")
-    input_data <- check_and_assign(input_data, i, "ITR_FILE_NAME", paste0(file_run_and_date, "_SUMMARY.xlsx"), "ITR_FILE_NAME")
+    input_data <- check_and_assign(input_data, i, iteration, "ITR_PATH", output_working_dir, "ITR_PATH")
+    input_data <- check_and_assign(input_data, i, iteration, "ITR_FILE_NAME", paste0(file_run_and_date, "_SUMMARY.xlsx"), "ITR_FILE_NAME")
 
     summary_txt_path <- NA_character_
     summary_txt_file <- NA_character_
@@ -284,8 +292,8 @@ check_and_assign <- function(df, i, col, val, var_name) {
       safe_progress(
         processed_iterations,
         total_iterations,
-        iteration = i,
-        status = sprintf("Running SUMMARY_GENERATOR for iteration %d", i)
+        iteration = iteration,
+        status = sprintf("Running SUMMARY_GENERATOR for iteration %d", iteration)
       )
 
       if (file.exists(summary_workbook_path)) {
@@ -302,60 +310,60 @@ check_and_assign <- function(df, i, col, val, var_name) {
       }
     }
 
-    input_data <- check_and_assign(input_data, i, "SUMMARY_TXT_PATH", summary_txt_path, "SUMMARY_TXT_PATH")
-    input_data <- check_and_assign(input_data, i, "SUMMARY_TXT_FILE", summary_txt_file, "SUMMARY_TXT_FILE")
+    input_data <- check_and_assign(input_data, i, iteration, "SUMMARY_TXT_PATH", summary_txt_path, "SUMMARY_TXT_PATH")
+    input_data <- check_and_assign(input_data, i, iteration, "SUMMARY_TXT_FILE", summary_txt_file, "SUMMARY_TXT_FILE")
 
     # --- RULES_Checker outputs ---
-    input_data <- check_and_assign(input_data, i, "MAX_N_SIZE", RULES_OP$Max_n_size, "Max_n_size")
-    input_data <- check_and_assign(input_data, i, "MAX_N_SIZE_PERC", RULES_OP$Max_n_size_perc, "Max_n_size_perc")
-    input_data <- check_and_assign(input_data, i, "MIN_N_SIZE", RULES_OP$Min_n_size, "Min_n_size")
-    input_data <- check_and_assign(input_data, i, "MIN_N_SIZE_PERC", RULES_OP$Min_n_size_perc, "Min_n_size_perc")
-    input_data <- check_and_assign(input_data, i, "SOLUTION_N_SIZE", RULES_OP$seg_n, "seg_n")
+    input_data <- check_and_assign(input_data, i, iteration, "MAX_N_SIZE", RULES_OP$Max_n_size, "Max_n_size")
+    input_data <- check_and_assign(input_data, i, iteration, "MAX_N_SIZE_PERC", RULES_OP$Max_n_size_perc, "Max_n_size_perc")
+    input_data <- check_and_assign(input_data, i, iteration, "MIN_N_SIZE", RULES_OP$Min_n_size, "Min_n_size")
+    input_data <- check_and_assign(input_data, i, iteration, "MIN_N_SIZE_PERC", RULES_OP$Min_n_size_perc, "Min_n_size_perc")
+    input_data <- check_and_assign(input_data, i, iteration, "SOLUTION_N_SIZE", RULES_OP$seg_n, "seg_n")
 
-    input_data <- check_and_assign(input_data, i, "PROB_95", RULES_OP$prob_95, "prob_95")
-    input_data <- check_and_assign(input_data, i, "PROB_90", RULES_OP$prob_90, "prob_90")
-    input_data <- check_and_assign(input_data, i, "PROB_80", RULES_OP$prob_80, "prob_80")
-    input_data <- check_and_assign(input_data, i, "PROB_75", RULES_OP$prob_75, "prob_75")
-    input_data <- check_and_assign(input_data, i, "PROB_LESS_THAN_50", RULES_OP$prob_low_50, "prob_low_50")
+    input_data <- check_and_assign(input_data, i, iteration, "PROB_95", RULES_OP$prob_95, "prob_95")
+    input_data <- check_and_assign(input_data, i, iteration, "PROB_90", RULES_OP$prob_90, "prob_90")
+    input_data <- check_and_assign(input_data, i, iteration, "PROB_80", RULES_OP$prob_80, "prob_80")
+    input_data <- check_and_assign(input_data, i, iteration, "PROB_75", RULES_OP$prob_75, "prob_75")
+    input_data <- check_and_assign(input_data, i, iteration, "PROB_LESS_THAN_50", RULES_OP$prob_low_50, "prob_low_50")
 
-    input_data <- check_and_assign(input_data, i, "BIMODAL_VARS", RULES_OP$final_bi_n, "final_bi_n")
-    input_data <- check_and_assign(input_data, i, "PROPER_BUCKETED_VARS", RULES_OP$proper_bucketted_vars, "proper_bucketted_vars")
-    input_data <- check_and_assign(input_data, i, "BIMODAL_VARS_PERC", RULES_OP$bi_n_perc, "bi_n_perc")
+    input_data <- check_and_assign(input_data, i, iteration, "BIMODAL_VARS", RULES_OP$final_bi_n, "final_bi_n")
+    input_data <- check_and_assign(input_data, i, iteration, "PROPER_BUCKETED_VARS", RULES_OP$proper_bucketted_vars, "proper_bucketted_vars")
+    input_data <- check_and_assign(input_data, i, iteration, "BIMODAL_VARS_PERC", RULES_OP$bi_n_perc, "bi_n_perc")
 
-    input_data <- check_and_assign(input_data, i, "ROV_SD", RULES_OP$sd_rov, "sd_rov")
-    input_data <- check_and_assign(input_data, i, "ROV_RANGE", RULES_OP$range_rov, "range_rov")
+    input_data <- check_and_assign(input_data, i, iteration, "ROV_SD", RULES_OP$sd_rov, "sd_rov")
+    input_data <- check_and_assign(input_data, i, iteration, "ROV_RANGE", RULES_OP$range_rov, "range_rov")
 
-    input_data <- check_and_assign(input_data, i, "seg1_diff", RULES_OP$seg1_diff, "seg1_diff")
-    input_data <- check_and_assign(input_data, i, "seg2_diff", RULES_OP$seg2_diff, "seg2_diff")
-    input_data <- check_and_assign(input_data, i, "seg3_diff", RULES_OP$seg3_diff, "seg3_diff")
-    input_data <- check_and_assign(input_data, i, "seg4_diff", RULES_OP$seg4_diff, "seg4_diff")
-    input_data <- check_and_assign(input_data, i, "seg5_diff", RULES_OP$seg5_diff, "seg5_diff")
+    input_data <- check_and_assign(input_data, i, iteration, "seg1_diff", RULES_OP$seg1_diff, "seg1_diff")
+    input_data <- check_and_assign(input_data, i, iteration, "seg2_diff", RULES_OP$seg2_diff, "seg2_diff")
+    input_data <- check_and_assign(input_data, i, iteration, "seg3_diff", RULES_OP$seg3_diff, "seg3_diff")
+    input_data <- check_and_assign(input_data, i, iteration, "seg4_diff", RULES_OP$seg4_diff, "seg4_diff")
+    input_data <- check_and_assign(input_data, i, iteration, "seg5_diff", RULES_OP$seg5_diff, "seg5_diff")
 
     # --- bi/perf/indT/indB loops ---
     for (k in 1:5) {
-      input_data <- check_and_assign(input_data, i, paste0("bi_", k),   RULES_OP[[paste0("bi_", k)]],   paste0("bi_", k))
-      input_data <- check_and_assign(input_data, i, paste0("perf_", k), RULES_OP[[paste0("perf_", k)]], paste0("perf_", k))
-      input_data <- check_and_assign(input_data, i, paste0("indT_", k), RULES_OP[[paste0("indT_", k)]], paste0("indT_", k))
-      input_data <- check_and_assign(input_data, i, paste0("indB_", k), RULES_OP[[paste0("indB_", k)]], paste0("indB_", k))
+      input_data <- check_and_assign(input_data, i, iteration, paste0("bi_", k),   RULES_OP[[paste0("bi_", k)]],   paste0("bi_", k))
+      input_data <- check_and_assign(input_data, i, iteration, paste0("perf_", k), RULES_OP[[paste0("perf_", k)]], paste0("perf_", k))
+      input_data <- check_and_assign(input_data, i, iteration, paste0("indT_", k), RULES_OP[[paste0("indT_", k)]], paste0("indT_", k))
+      input_data <- check_and_assign(input_data, i, iteration, paste0("indB_", k), RULES_OP[[paste0("indB_", k)]], paste0("indB_", k))
     }
 
     # --- OF metrics (dynamic) ---
     for (col_name in of_metric_cols) {
-      input_data <- check_and_assign(input_data, i, col_name, RULES_OP[[col_name]], col_name)
+      input_data <- check_and_assign(input_data, i, iteration, col_name, RULES_OP[[col_name]], col_name)
     }
 
     input_data <- propagate_legacy_of_aliases(input_data)
 
-    input_data <- check_and_assign(input_data, i, "BIMODAL_VARS_INPUT_VARS", RULES_OP$final_bi_n_input, "final_bi_n_input")
+    input_data <- check_and_assign(input_data, i, iteration, "BIMODAL_VARS_INPUT_VARS", RULES_OP$final_bi_n_input, "final_bi_n_input")
 
     # --- new input performance metrics ---
-    input_data <- check_and_assign(input_data, i, "INPUT_PERF_SEG_COVERED", RULES_OP$input_perf_seg_covered, "input_perf_seg_covered")
-    input_data <- check_and_assign(input_data, i, "INPUT_PERF_FLAG", RULES_OP$input_perf_flag, "input_perf_flag")
-    input_data <- check_and_assign(input_data, i, "INPUT_PERF_MINSEG", RULES_OP$input_perf_minseg, "input_perf_minseg")
-    input_data <- check_and_assign(input_data, i, "INPUT_PERF_MAXSEG", RULES_OP$input_perf_maxseg, "input_perf_maxseg")
+    input_data <- check_and_assign(input_data, i, iteration, "INPUT_PERF_SEG_COVERED", RULES_OP$input_perf_seg_covered, "input_perf_seg_covered")
+    input_data <- check_and_assign(input_data, i, iteration, "INPUT_PERF_FLAG", RULES_OP$input_perf_flag, "input_perf_flag")
+    input_data <- check_and_assign(input_data, i, iteration, "INPUT_PERF_MINSEG", RULES_OP$input_perf_minseg, "input_perf_minseg")
+    input_data <- check_and_assign(input_data, i, iteration, "INPUT_PERF_MAXSEG", RULES_OP$input_perf_maxseg, "input_perf_maxseg")
 
     # --- wrap up ---
-    input_data <- check_and_assign(input_data, i, "Ran_Iteration_Flag", 1, "Ran_Iteration_Flag")
+    input_data <- check_and_assign(input_data, i, iteration, "Ran_Iteration_Flag", 1, "Ran_Iteration_Flag")
 
     dynamic_of_cols <- sort_of_columns(names(input_data)[grepl(of_pattern, names(input_data))])
     ordered_cols <- c(
@@ -373,10 +381,10 @@ check_and_assign <- function(df, i, col, val, var_name) {
     safe_progress(
       processed_iterations,
       total_iterations,
-      iteration = i,
+      iteration = iteration,
       status = sprintf(
         "Completed iteration %d (%d of %d)",
-        i,
+        iteration,
         processed_iterations,
         total_iterations
       )
@@ -389,10 +397,10 @@ check_and_assign <- function(df, i, col, val, var_name) {
        safe_progress(
          total_iterations,
          total_iterations,
-         iteration = i,
+         iteration = iteration,
          status = "Output generation complete."
        )
-       op<-list(RULES_OP$seg_n_sizes,RULES_OP$final_bi_n,RULES_OP$bi_n_perc,i,solo,RULES_OP$n_size_table)
+       op<-list(RULES_OP$seg_n_sizes,RULES_OP$final_bi_n,RULES_OP$bi_n_perc,iteration,solo,RULES_OP$n_size_table)
        return(op)
     }
   }
