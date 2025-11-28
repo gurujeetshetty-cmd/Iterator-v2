@@ -291,8 +291,9 @@ check_and_assign <- function(df, i, col, val, var_name) {
       if (file.exists(summary_workbook_path)) {
         tryCatch({
           summary_result <- run_summary_generator(summary_workbook_path, output_working_dir, summary_txt_name)
-          summary_txt_path <- summary_result$output_path
-          summary_txt_file <- basename(summary_result$output_path)
+          summary_txt_path <- normalizePath(summary_result$output_path, winslash = "/", mustWork = FALSE)
+          summary_txt_file <- basename(summary_txt_path)
+          cat("📝 SUMMARY_GENERATOR saved:", summary_txt_path, "\n")
         }, error = function(e) {
           cat("⚠️ Failed to run SUMMARY_GENERATOR for iteration", i, ":", conditionMessage(e), "\n")
         })

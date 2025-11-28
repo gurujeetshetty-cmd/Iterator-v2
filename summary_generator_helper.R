@@ -802,7 +802,10 @@ write_summary_txt <- function(lines, output_dir, file_name) {
 
   output_path <- file.path(output_dir, file_name)
   writeLines(lines, output_path)
-  output_path
+
+  # Return a normalized, absolute path so downstream consumers can log
+  # and store the location reliably (even if the working directory changes).
+  normalizePath(output_path, winslash = "/", mustWork = FALSE)
 }
 
 # ---- Main orchestrator ----
